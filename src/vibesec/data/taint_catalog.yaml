@@ -1,0 +1,152 @@
+version: 1
+description: >
+  Static source-to-sink catalog for Python and JS/TS web handlers. Patterns are matched
+  against AST call names and signatures; the scanner never imports or executes target code.
+
+sources:
+  - id: fastapi.body
+    match: [Body]
+    origin: request.body
+    frameworks: [fastapi]
+  - id: fastapi.query
+    match: [Query]
+    origin: request.query
+    frameworks: [fastapi]
+  - id: fastapi.path
+    match: [Path]
+    origin: request.path
+    frameworks: [fastapi]
+  - id: fastapi.form
+    match: [Form]
+    origin: request.form
+    frameworks: [fastapi]
+  - id: fastapi.file
+    match: [File]
+    origin: request.file
+    frameworks: [fastapi]
+  - id: fastapi.header
+    match: [Header]
+    origin: request.header
+    frameworks: [fastapi]
+  - id: fastapi.cookie
+    match: [Cookie]
+    origin: request.cookie
+    frameworks: [fastapi]
+  - id: flask.args
+    match: [request.args, request.form, request.values, request.json, request.data, request.files]
+    origin: request.input
+    frameworks: [flask]
+  - id: django.request
+    match: [request.GET, request.POST, request.body, request.FILES]
+    origin: request.input
+    frameworks: [django]
+  - id: express.req
+    match: [req.body, req.query, req.params, req.headers, req.cookies]
+    origin: request.input
+    frameworks: [express, nextjs, fastify]
+  - id: nextjs.req
+    match: [req.json, req.text, req.nextUrl]
+    origin: request.input
+    frameworks: [nextjs]
+  - id: process.argv
+    match: [sys.argv, process.argv]
+    origin: process.argv
+    frameworks: []
+  - id: stdin
+    match: [input]
+    origin: process.stdin
+    frameworks: []
+
+sinks:
+  - id: command.shell
+    match: [os.system, os.popen, subprocess.run, subprocess.call, subprocess.Popen, subprocess.check_output, subprocess.check_call, exec, execSync, spawn, spawnSync, child_process.exec]
+    cwe: CWE-78
+    rule: vibe.taint.command_injection
+    severity: CRITICAL
+    impact: command_execution
+    confidence: 0.95
+    rationale: Untrusted input reaches a command execution interface without safe argument-array separation.
+  - id: code.eval
+    match: [eval, exec, compile, Function, setTimeout, setInterval]
+    cwe: CWE-94
+    rule: vibe.taint.code_injection
+    severity: CRITICAL
+    impact: code_execution
+    confidence: 0.95
+    rationale: Untrusted input is evaluated directly as executable code.
+  - id: sql.execute
+    match: [execute, executemany, raw, query, db.query, pool.query, client.query]
+    cwe: CWE-89
+    rule: vibe.taint.sql_injection
+    severity: HIGH
+    impact: sql_injection
+    confidence: 0.90
+    rationale: Untrusted input reaches a database query execution built through string formatting rather than query parameters.
+  - id: deserialize.pickle
+    match: [pickle.loads, pickle.load, yaml.load, marshal.loads, serialize.unserialize]
+    cwe: CWE-502
+    rule: vibe.taint.unsafe_deserialization
+    severity: HIGH
+    impact: deserialization
+    confidence: 0.85
+    rationale: Untrusted input is passed to an unsafe deserializer capable of instantiating arbitrary objects or executing code.
+  - id: http.request
+    match: [requests.get, requests.post, requests.put, requests.delete, httpx.get, httpx.post, urllib.request.urlopen, urllib.request.Request, fetch, axios.get, axios.post, http.get, https.get]
+    cwe: CWE-918
+    rule: vibe.taint.ssrf
+    severity: HIGH
+    impact: ssrf
+    confidence: 0.80
+    rationale: Request-controlled URL is fetched by the server without domain allowlist validation, enabling SSRF.
+  - id: file.open
+    match: [open, send_file, send_from_directory, readFile, readFileSync, createReadStream, res.sendFile, fs.readFile]
+    cwe: CWE-22
+    rule: vibe.taint.path_traversal
+    severity: HIGH
+    impact: path_traversal
+    confidence: 0.80
+    rationale: Request-controlled path reaches filesystem read/write operations without canonicalization and prefix validation.
+  - id: llm.prompt
+    match: [openai.ChatCompletion.create, client.chat.completions.create, chat.completions.create, llm.invoke, llm.predict, chain.run, anthropic.messages.create]
+    cwe: CWE-1426
+    rule: vibe.taint.llm_prompt_injection
+    severity: HIGH
+    impact: llm_prompt_injection
+    confidence: 0.85
+    rationale: Unsanitized user input is concatenated directly into an LLM system or user prompt template.
+  - id: redirect.target
+    match: [redirect, res.redirect]
+    cwe: CWE-601
+    rule: vibe.taint.open_redirect
+    severity: MEDIUM
+    impact: open_redirect
+    confidence: 0.75
+    rationale: Untrusted URL supplied by client is used as a redirect location without allowlist verification.
+  - id: template.render
+    match: [render_template_string, Markup, dangerouslySetInnerHTML, innerHTML, res.send]
+    cwe: CWE-79
+    rule: vibe.taint.xss
+    severity: MEDIUM
+    impact: xss
+    confidence: 0.75
+    rationale: Untrusted input is rendered directly into HTML markup without context-aware escaping.
+  - id: response.leak
+    match: [traceback.format_exc, str(e), err.stack]
+    cwe: CWE-209
+    rule: vibe.taint.info_leak
+    severity: LOW
+    impact: info_leak
+    confidence: 0.70
+    rationale: Exception stack trace or internal diagnostic details returned directly to client.
+
+sanitizers:
+  - match: [int, float, bool, len, shlex.quote, html.escape, markupsafe.escape, secure_filename, os.path.basename, path.basename, encodeURIComponent]
+    rationale: Type coercion, shell quoting, HTML escaping, or basename normalization neutralizes injection.
+  - match: [uuid.UUID, UUID]
+    rationale: Strict UUID parser rejects arbitrary character injection.
+  - match: [path.resolve, os.path.abspath]
+    rationale: Path resolution combined with prefix check confines path traversal.
+
+notes:
+  - Parameterized SQL calls (with tuple/list/dict parameters and constant format template) are excluded.
+  - Interprocedural summaries track parameter-to-return and parameter-to-sink flows up to depth 5.

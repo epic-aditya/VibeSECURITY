@@ -1,0 +1,70 @@
+# Toolchain / build / test roots.
+# Used by exposure.py to decide whether a lockfile package can reach production.
+# A package reachable ONLY through these roots is TOOLCHAIN_* or TEST, never
+# RUNTIME_BUNDLE/RUNTIME_SERVER. dev_server: true marks hot-reload/dev-server roots.
+version: 1
+toolchain_roots:
+  react-scripts: {dev_server: false, ecosystem: npm}
+  react-dev-utils: {dev_server: false, ecosystem: npm}
+  webpack: {dev_server: false, ecosystem: npm}
+  webpack-cli: {dev_server: false, ecosystem: npm}
+  webpack-dev-server: {dev_server: true, ecosystem: npm}
+  webpack-dev-middleware: {dev_server: true, ecosystem: npm}
+  webpack-hot-middleware: {dev_server: true, ecosystem: npm}
+  vite: {dev_server: true, ecosystem: npm}
+  "@vitejs/plugin-react": {dev_server: true, ecosystem: npm}
+  "@vitejs/plugin-vue": {dev_server: true, ecosystem: npm}
+  "@babel/core": {dev_server: false, ecosystem: npm}
+  "@babel/preset-env": {dev_server: false, ecosystem: npm}
+  "@babel/preset-react": {dev_server: false, ecosystem: npm}
+  "@babel/preset-typescript": {dev_server: false, ecosystem: npm}
+  babel-loader: {dev_server: false, ecosystem: npm}
+  eslint: {dev_server: false, ecosystem: npm}
+  "@eslint/js": {dev_server: false, ecosystem: npm}
+  prettier: {dev_server: false, ecosystem: npm}
+  jest: {dev_server: false, ecosystem: npm, test: true}
+  babel-jest: {dev_server: false, ecosystem: npm, test: true}
+  ts-jest: {dev_server: false, ecosystem: npm, test: true}
+  vitest: {dev_server: false, ecosystem: npm, test: true}
+  "@testing-library/react": {dev_server: false, ecosystem: npm, test: true}
+  "@testing-library/jest-dom": {dev_server: false, ecosystem: npm, test: true}
+  cypress: {dev_server: false, ecosystem: npm, test: true}
+  playwright: {dev_server: false, ecosystem: npm, test: true}
+  "@playwright/test": {dev_server: false, ecosystem: npm, test: true}
+  typescript: {dev_server: false, ecosystem: npm}
+  postcss: {dev_server: false, ecosystem: npm}
+  postcss-loader: {dev_server: false, ecosystem: npm}
+  autoprefixer: {dev_server: false, ecosystem: npm}
+  tailwindcss: {dev_server: false, ecosystem: npm}
+  craco: {dev_server: false, ecosystem: npm}
+  parcel: {dev_server: true, ecosystem: npm}
+  rollup: {dev_server: false, ecosystem: npm}
+  esbuild: {dev_server: false, ecosystem: npm}
+  nodemon: {dev_server: true, ecosystem: npm}
+  ts-node: {dev_server: false, ecosystem: npm}
+  storybook: {dev_server: false, ecosystem: npm}
+  "@storybook/react": {dev_server: false, ecosystem: npm}
+  sass: {dev_server: false, ecosystem: npm}
+  less: {dev_server: false, ecosystem: npm}
+  terser: {dev_server: false, ecosystem: npm}
+  css-loader: {dev_server: false, ecosystem: npm}
+  style-loader: {dev_server: false, ecosystem: npm}
+  file-loader: {dev_server: false, ecosystem: npm}
+  html-webpack-plugin: {dev_server: false, ecosystem: npm}
+  mini-css-extract-plugin: {dev_server: false, ecosystem: npm}
+  copy-webpack-plugin: {dev_server: false, ecosystem: npm}
+  clean-webpack-plugin: {dev_server: false, ecosystem: npm}
+  # Python toolchain roots
+  pytest: {dev_server: false, ecosystem: pypi, test: true}
+  pytest-cov: {dev_server: false, ecosystem: pypi, test: true}
+  tox: {dev_server: false, ecosystem: pypi, test: true}
+  nox: {dev_server: false, ecosystem: pypi, test: true}
+  mypy: {dev_server: false, ecosystem: pypi}
+  ruff: {dev_server: false, ecosystem: pypi}
+  black: {dev_server: false, ecosystem: pypi}
+  bandit: {dev_server: false, ecosystem: pypi}
+  semgrep: {dev_server: false, ecosystem: pypi}
+  build: {dev_server: false, ecosystem: pypi}
+  twine: {dev_server: false, ecosystem: pypi}
+  wheel: {dev_server: false, ecosystem: pypi}
+  setuptools: {dev_server: false, ecosystem: pypi}

@@ -1,0 +1,21 @@
+[
+  "react", "react-dom", "lodash", "axios", "chalk", "commander", "debug", "tslib",
+  "vue", "next", "moment", "uuid", "express", "async", "dotenv", "semver", "glob",
+  "mkdirp", "fs-extra", "bluebird", "yargs", "body-parser", "cors", "cookie-parser",
+  "jsonwebtoken", "bcrypt", "bcryptjs", "passport", "mongoose", "pg", "mysql2",
+  "redis", "socket.io", "ws", "rxjs", "rxjs-compat", "core-js", "regenerator-runtime",
+  "babel-core", "@babel/core", "@babel/runtime", "webpack", "webpack-cli", "webpack-dev-server",
+  "rollup", "vite", "esbuild", "typescript", "eslint", "prettier", "jest", "mocha",
+  "chai", "supertest", "cypress", "playwright", "puppeteer", "cheerio", "sharp",
+  "classnames", "clsx", "tailwind-merge", "postcss", "autoprefixer", "tailwindcss",
+  "styled-components", "@emotion/react", "@emotion/styled", "zod", "yup", "joi",
+  "lucide-react", "react-icons", "@radix-ui/react-slot", "@radix-ui/react-dialog",
+  "framer-motion", "three", "d3", "chart.js", "date-fns", "dayjs", "dayjs", "luxon",
+  "query-string", "qs", "nanoid", "validator", "winston", "morgan", "pino", "bunyan",
+  "multer", "formidable", "nodemailer", "handlebars", "ejs", "pug", "cross-env",
+  "rimraf", "chokidar", "dotenv-expand", "nodemon", "concurrently", "npm-run-all",
+  "openai", "anthropic", "langchain", "@langchain/core", "@langchain/openai",
+  "zustand", "redux", "react-redux", "@reduxjs/toolkit", "mobx", "mobx-react-lite",
+  "recoil", "jotai", "swr", "@tanstack/react-query", "apollo-client", "graphql",
+  "prisma", "@prisma/client", "typeorm", "sequelize", "knex", "dotenv"
+]

@@ -1,0 +1,312 @@
+rules:
+  # ====================================================================
+  # CATEGORY 1: SECRETS
+  # ====================================================================
+  - id: vibe.hardcoded_credentials
+    languages: [javascript, typescript]
+    severity: HIGH
+    message: "Hardcoded credential detected in JavaScript source. Use process.env."
+    metadata:
+      cwe: CWE-798
+      confidence: "0.9"
+      category: secret
+      sensitive_asset: credentials
+    patterns:
+      - pattern-either:
+          - pattern: const API_KEY = "$KEY";
+          - pattern: const token = "$KEY";
+          - pattern: const SECRET_KEY = "$KEY";
+          - pattern: var API_KEY = "$KEY";
+          - pattern: let API_KEY = "$KEY";
+          - pattern: const $VAR = "sk-$TAIL";
+          - pattern: const $VAR = "ghp_$TAIL";
+      - pattern-not: const API_KEY = process.env[...];
+      - pattern-not: const API_KEY = process.env.$PROP;
+
+  - id: vibe.weak_hardcoded_jwt_secret
+    languages: [javascript, typescript]
+    severity: HIGH
+    message: "Weak or hardcoded JWT secret in Node.js. Use a strong key from environment."
+    metadata:
+      cwe: CWE-321
+      confidence: "0.9"
+      category: secret
+      sensitive_asset: auth token
+    patterns:
+      - pattern-either:
+          - pattern: const JWT_SECRET = "secret";
+          - pattern: const JWT_SECRET = "mysecretkey";
+          - pattern: const SECRET_KEY = "secret";
+          - pattern: jwt.sign($PAYLOAD, "secret", ...)
+          - pattern: jwt.sign($PAYLOAD, "mysecretkey", ...)
+
+  - id: vibe.llm_frontend_api_key
+    languages: [javascript, typescript]
+    severity: CRITICAL
+    message: "AI / LLM API key exposed in client-facing frontend bundle (REACT_APP_* or NEXT_PUBLIC_* or VITE_*)."
+    metadata:
+      cwe: CWE-798
+      confidence: "0.9"
+      category: secret
+      sensitive_asset: credentials
+    patterns:
+      - pattern-either:
+          - pattern: process.env.NEXT_PUBLIC_OPENAI_API_KEY
+          - pattern: process.env.REACT_APP_OPENAI_API_KEY
+          - pattern: process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY
+          - pattern: import.meta.env.VITE_OPENAI_API_KEY
+          - pattern: const $KEY = "sk-$TAIL";
+
+  # ====================================================================
+  # CATEGORY 2: INJECTION & COMMAND EXECUTION
+  # ====================================================================
+  - id: vibe.sql_string_concat
+    languages: [javascript, typescript]
+    severity: HIGH
+    message: "SQL query constructed via string concatenation or template literal. Use parameterized queries."
+    metadata:
+      cwe: CWE-89
+      confidence: "0.95"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: $DB.query("..." + $X + "...", ...)
+          - pattern: $DB.query("..." + $X, ...)
+          - pattern: $DB.execute("..." + $X + "...", ...)
+          - pattern: $DB.execute("..." + $X, ...)
+          - pattern: $CONN.query(`...${$X}...`, ...)
+          - pattern: $CONN.execute(`...${$X}...`, ...)
+
+  - id: vibe.command_injection_shell_true
+    languages: [javascript, typescript]
+    severity: CRITICAL
+    message: "Command execution via child_process.exec. Use execFile with argument array instead."
+    metadata:
+      cwe: CWE-78
+      confidence: "0.9"
+      category: code
+      taint: true
+      sensitive_asset: shell
+    patterns:
+      - pattern-either:
+          - pattern: exec($CMD, ...)
+          - pattern: execSync($CMD, ...)
+          - pattern: child_process.exec($CMD, ...)
+          - pattern: child_process.execSync($CMD, ...)
+      - pattern-not: execFile(...)
+      - pattern-not: execFileSync(...)
+      - pattern-not: child_process.execFile(...)
+      - pattern-not: child_process.execFileSync(...)
+
+  - id: vibe.dangerous_eval_exec
+    languages: [javascript, typescript]
+    severity: CRITICAL
+    message: "Dynamic code execution via eval or Function constructor. Use safe parsers."
+    metadata:
+      cwe: CWE-95
+      confidence: "0.9"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function($X)
+          - pattern: new Function(..., $X)
+
+  # ====================================================================
+  # CATEGORY 3: AUTHENTICATION & ACCESS CONTROL
+  # ====================================================================
+  - id: vibe.missing_auth_state_change_js
+    languages: [javascript, typescript]
+    severity: MEDIUM
+    message: "State-changing route handler in Express without authentication middleware in chain."
+    metadata:
+      cwe: CWE-306
+      confidence: "0.55"
+      category: code
+      auth_context: public
+    patterns:
+      - pattern-either:
+          - pattern: |
+              app.post($PATH, (req, res) => { ... })
+          - pattern: |
+              app.put($PATH, (req, res) => { ... })
+          - pattern: |
+              app.delete($PATH, (req, res) => { ... })
+          - pattern: |
+              router.post($PATH, (req, res) => { ... })
+          - pattern: |
+              router.delete($PATH, (req, res) => { ... })
+
+  - id: vibe.jwt_none_algorithm
+    languages: [javascript, typescript]
+    severity: CRITICAL
+    message: "Insecure JWT verification allowing 'none' algorithm."
+    metadata:
+      cwe: CWE-327
+      confidence: "0.95"
+      category: code
+    patterns:
+      - pattern-either:
+          - pattern: "jwt.verify($TOKEN, $KEY, { algorithms: ['none'] }, ...)"
+          - pattern: "jwt.verify($TOKEN, $KEY, { algorithm: 'none' }, ...)"
+
+  - id: vibe.missing_rate_limiting_auth_js
+    languages: [javascript, typescript]
+    severity: MEDIUM
+    message: "Express login/signup route handler without rate limiter middleware."
+    metadata:
+      cwe: CWE-307
+      confidence: "0.75"
+      category: code
+    patterns:
+      - pattern-either:
+          - pattern: app.post("/login", (req, res) => { ... })
+          - pattern: app.post("/api/auth/login", (req, res) => { ... })
+          - pattern: router.post("/login", (req, res) => { ... })
+
+  # ====================================================================
+  # CATEGORY 4: INPUT VALIDATION & ROUTING
+  # ====================================================================
+  - id: vibe.express_missing_input_validation
+    languages: [javascript, typescript]
+    severity: LOW
+    message: "Unvalidated request payload used directly. Validate with Zod, Yup, or Joi."
+    metadata:
+      cwe: CWE-20
+      confidence: "0.6"
+      category: code
+    patterns:
+      - pattern: const { ...$VARS } = req.body;
+
+  - id: vibe.ssrf_axios_fetch
+    languages: [javascript, typescript]
+    severity: HIGH
+    message: "Potential SSRF: unvalidated URL from query parameter fetched directly."
+    metadata:
+      cwe: CWE-918
+      confidence: "0.8"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: axios.get(req.query.$PARAM)
+          - pattern: fetch(req.query.$PARAM)
+          - pattern: axios.get(req.body.$PARAM)
+
+  - id: vibe.path_traversal_js
+    languages: [javascript, typescript]
+    severity: HIGH
+    message: "Path traversal hazard: unsanitized file path opened from user request."
+    metadata:
+      cwe: CWE-22
+      confidence: "0.8"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: res.sendFile(path.join(..., req.params.$PARAM))
+          - pattern: fs.readFile(path.join(..., req.query.$PARAM), ...)
+          - pattern: fs.readFileSync(path.join(..., req.query.$PARAM), ...)
+
+  # ====================================================================
+  # CATEGORY 5: CONFIGURATION & INTEGRITY
+  # ====================================================================
+  - id: vibe.overly_permissive_cors
+    languages: [javascript, typescript]
+    severity: MEDIUM
+    message: "Permissive CORS configuration (wildcard origins allowed). Restrict to trusted domains."
+    metadata:
+      cwe: CWE-942
+      confidence: "0.85"
+      category: config
+    patterns:
+      - pattern-either:
+          - pattern: "cors({ origin: '*' })"
+          - pattern: "cors({ origin: '*', credentials: true })"
+          - pattern: res.header("Access-Control-Allow-Origin", "*")
+          - pattern: res.setHeader("Access-Control-Allow-Origin", "*")
+
+  - id: vibe.insecure_password_handling
+    languages: [javascript, typescript]
+    severity: MEDIUM
+    message: "Insecure password hashing with MD5 or SHA1. Use bcrypt or argon2."
+    metadata:
+      cwe: CWE-328
+      confidence: "0.8"
+      category: code
+      sensitive_asset: credentials
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createHash('md5')
+          - pattern: crypto.createHash("md5")
+          - pattern: crypto.createHash('sha1')
+          - pattern: crypto.createHash("sha1")
+
+  - id: vibe.insecure_cookie_js
+    languages: [javascript, typescript]
+    severity: LOW
+    message: "Cookie set without httpOnly or secure flags."
+    metadata:
+      cwe: CWE-614
+      confidence: "0.8"
+      category: config
+    patterns:
+      - pattern: res.cookie($NAME, $VAL)
+      - pattern-not: 'res.cookie($NAME, $VAL, { ..., httpOnly: true, secure: true, ... })'
+
+  - id: vibe.insecure_regex_dos
+    languages: [javascript, typescript]
+    severity: MEDIUM
+    message: "Regular expression constructed directly from user input (ReDoS risk)."
+    metadata:
+      cwe: CWE-1333
+      confidence: "0.85"
+      category: code
+    patterns:
+      - pattern-either:
+          - pattern: new RegExp(req.query.$PARAM, ...)
+          - pattern: new RegExp(req.body.$PARAM, ...)
+
+  # ====================================================================
+  # CATEGORY 6: AI / LLM APPLICATION RISKS
+  # ====================================================================
+  - id: vibe.llm_prompt_injection_concat_js
+    languages: [javascript, typescript]
+    severity: HIGH
+    message: "User input concatenated directly into LLM prompt template without boundary delimiters."
+    metadata:
+      cwe: CWE-77
+      confidence: "0.8"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: |
+              openai.chat.completions.create({
+                ...,
+                messages: [{ role: "user", content: `...${$INPUT}...` }],
+                ...
+              })
+          - pattern: |
+              openai.chat.completions.create({
+                ...,
+                messages: [{ role: "user", content: "..." + $INPUT + "..." }],
+                ...
+              })
+
+  - id: vibe.llm_output_to_dangerously_set_inner_html
+    languages: [javascript, typescript]
+    severity: HIGH
+    message: "LLM output passed directly to dangerouslySetInnerHTML or innerHTML without HTML sanitization (XSS risk)."
+    metadata:
+      cwe: CWE-79
+      confidence: "0.85"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: "<$TAG dangerouslySetInnerHTML={{ __html: $RESP.choices[0].message.content }} />"
+          - pattern: "$EL.innerHTML = $RESP.choices[0].message.content;"
+          - pattern: "<$TAG dangerouslySetInnerHTML={{ __html: $LLM_OUTPUT }} />"

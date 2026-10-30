@@ -1,0 +1,472 @@
+rules:
+  # ====================================================================
+  # CATEGORY 1: SECRETS & CREDENTIALS
+  # ====================================================================
+  - id: vibe.hardcoded_credentials
+    languages: [python]
+    severity: HIGH
+    message: "Hardcoded credential detected. Store keys in environment variables or a secret vault."
+    metadata:
+      cwe: CWE-798
+      confidence: "0.9"
+      category: secret
+      sensitive_asset: credentials
+    patterns:
+      - pattern-either:
+          - pattern: $VAR = "sk-$TAIL"
+          - pattern: $VAR = "AKIA$TAIL"
+          - pattern: $VAR = "ghp_$TAIL"
+          - pattern: $VAR = "gho_$TAIL"
+          - pattern: API_KEY = "$KEY"
+          - pattern: OPENAI_KEY = "$KEY"
+          - pattern: OPENAI_API_KEY = "$KEY"
+          - pattern: SECRET_KEY = "$KEY"
+          - pattern: password = "$KEY"
+          - pattern: passwd = "$KEY"
+      - pattern-not: $VAR = ""
+      - pattern-not: $VAR = os.environ[...]
+      - pattern-not: $VAR = os.environ.get(...)
+      - pattern-not: $VAR = os.getenv(...)
+      - pattern-not: $VAR = "YOUR_API_KEY"
+
+  - id: vibe.weak_hardcoded_jwt_secret
+    languages: [python]
+    severity: HIGH
+    message: "Weak or hardcoded JWT secret key. Use a strong secret loaded from environment."
+    metadata:
+      cwe: CWE-321
+      confidence: "0.9"
+      category: secret
+      sensitive_asset: auth token
+    patterns:
+      - pattern-either:
+          - pattern: jwt.encode($P, "secret", ...)
+          - pattern: jwt.encode($P, "mysecretkey", ...)
+          - pattern: jwt.encode($P, "123456", ...)
+          - pattern: jwt.decode($T, "secret", ...)
+          - pattern: JWT_SECRET = "secret"
+          - pattern: JWT_SECRET = "mysecretkey"
+          - pattern: SECRET_KEY = "secret"
+          - pattern: SECRET_KEY = "mysecretkey"
+
+  - id: vibe.hardcoded_database_url
+    languages: [python]
+    severity: HIGH
+    message: "Database connection URL containing credentials hardcoded in source."
+    metadata:
+      cwe: CWE-798
+      confidence: "0.85"
+      category: secret
+      sensitive_asset: database
+    patterns:
+      - pattern-either:
+          - pattern: $VAR = "postgresql://$USER:$PASS@$HOST/$DB"
+          - pattern: $VAR = "postgres://$USER:$PASS@$HOST/$DB"
+          - pattern: $VAR = "mysql://$USER:$PASS@$HOST/$DB"
+          - pattern: $VAR = "mongodb://$USER:$PASS@$HOST/$DB"
+          - pattern: $VAR = "redis://$USER:$PASS@$HOST"
+
+  - id: vibe.ai_hardcoded_client_key
+    languages: [python]
+    severity: HIGH
+    message: "Direct hardcoding of AI provider API key in client initialization."
+    metadata:
+      cwe: CWE-798
+      confidence: "0.9"
+      category: secret
+      sensitive_asset: credentials
+    patterns:
+      - pattern-either:
+          - pattern: openai.api_key = "sk-$TAIL"
+          - pattern: OpenAI(api_key="sk-$TAIL")
+          - pattern: Anthropic(api_key="$KEY")
+          - pattern: OpenAI(api_key="$KEY")
+      - pattern-not: OpenAI(api_key=os.environ[...])
+      - pattern-not: OpenAI(api_key=os.getenv(...))
+
+  # ====================================================================
+  # CATEGORY 2: INJECTION & CODE EXECUTION
+  # ====================================================================
+  - id: vibe.sql_string_concat
+    languages: [python]
+    severity: HIGH
+    message: "SQL query constructed via string formatting or concatenation. Use parameterized queries."
+    metadata:
+      cwe: CWE-89
+      confidence: "0.95"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: $CUR.execute(f"...{$X}...")
+          - pattern: $CUR.execute("..." + $X + "...")
+          - pattern: $CUR.execute("..." + $X)
+          - pattern: $CUR.execute("..." % $X)
+          - pattern: $CONN.execute(f"...{$X}...")
+          - pattern: $CONN.execute("..." + $X + "...")
+          - pattern: $DB.execute(f"...{$X}...")
+          - pattern: $DB.execute("..." + $X + "...")
+
+  - id: vibe.command_injection_shell_true
+    languages: [python]
+    severity: CRITICAL
+    message: "Command execution via shell=True or os.system with dynamic input. Use subprocess with argument array."
+    metadata:
+      cwe: CWE-78
+      confidence: "0.9"
+      category: code
+      taint: true
+      sensitive_asset: shell
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(..., shell=True, ...)
+          - pattern: subprocess.Popen(..., shell=True, ...)
+          - pattern: subprocess.call(..., shell=True, ...)
+          - pattern: subprocess.check_output(..., shell=True, ...)
+          - pattern: os.system($CMD)
+          - pattern: os.popen($CMD)
+      - pattern-not: subprocess.run(["...", ...], ...)
+      - pattern-not: subprocess.Popen(["...", ...], ...)
+
+  - id: vibe.dangerous_eval_exec
+    languages: [python]
+    severity: CRITICAL
+    message: "Dynamic code execution via eval/exec. Never pass untrusted strings to interpreter."
+    metadata:
+      cwe: CWE-95
+      confidence: "0.9"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: exec($X)
+
+  # ====================================================================
+  # CATEGORY 3: AUTHENTICATION & ACCESS CONTROL
+  # ====================================================================
+  - id: vibe.missing_auth_state_change
+    languages: [python]
+    severity: MEDIUM
+    message: "State-changing route handler (POST/PUT/PATCH/DELETE) without authentication dependency or decorator. Heuristic check: verify endpoint permissions."
+    metadata:
+      cwe: CWE-306
+      confidence: "0.55"
+      category: code
+      auth_context: public
+    patterns:
+      - pattern-either:
+          - pattern: |
+              @$ROUTER.post(...)
+              def $FUNC($...ARGS):
+                ...
+          - pattern: |
+              @$ROUTER.put(...)
+              def $FUNC($...ARGS):
+                ...
+          - pattern: |
+              @$ROUTER.delete(...)
+              def $FUNC($...ARGS):
+                ...
+      - pattern-not: |
+          @$ROUTER.post(..., dependencies=[...])
+          def $FUNC($...ARGS):
+            ...
+      - pattern-not: |
+          @$ROUTER.post(...)
+          def $FUNC(..., $AUTH = Depends(...), ...):
+            ...
+      - pattern-not: |
+          @$LOGIN_REQUIRED
+          @$ROUTER.post(...)
+          def $FUNC($...ARGS):
+            ...
+
+  - id: vibe.missing_rate_limiting_auth
+    languages: [python]
+    severity: MEDIUM
+    message: "Authentication or credential-recovery endpoint missing rate limiting. Brute force risk."
+    metadata:
+      cwe: CWE-307
+      confidence: "0.75"
+      category: code
+    patterns:
+      - pattern-either:
+          - pattern: |
+              @$APP.route("/login", methods=[..., "POST", ...])
+              def $FUNC($...ARGS):
+                ...
+          - pattern: |
+              @$APP.post("/api/v1/auth/login")
+              def $FUNC($...ARGS):
+                ...
+          - pattern: |
+              @$APP.post("/login")
+              def $FUNC($...ARGS):
+                ...
+          - pattern: |
+              @$APP.post("/register")
+              def $FUNC($...ARGS):
+                ...
+      - pattern-not: |
+          @limiter.limit(...)
+          def $FUNC($...ARGS):
+            ...
+
+  - id: vibe.insecure_cookie_session
+    languages: [python]
+    severity: LOW
+    message: "Cookie set without secure flags (httponly=True, secure=True, samesite='Lax'/'Strict')."
+    metadata:
+      cwe: CWE-614
+      confidence: "0.85"
+      category: config
+    patterns:
+      - pattern-either:
+          - pattern: $RESP.set_cookie($KEY, $VAL)
+          - pattern: response.set_cookie($KEY, $VAL)
+      - pattern-not: $RESP.set_cookie(..., httponly=True, secure=True, ...)
+      - pattern-not: response.set_cookie(..., httponly=True, secure=True, ...)
+
+  # ====================================================================
+  # CATEGORY 4: INPUT VALIDATION & ROUTING
+  # ====================================================================
+  - id: vibe.fastapi_missing_input_validation
+    languages: [python]
+    severity: MEDIUM
+    message: "FastAPI route handler takes unvalidated raw dict or Request body instead of a Pydantic schema model."
+    metadata:
+      cwe: CWE-20
+      confidence: "0.8"
+      category: code
+    patterns:
+      - pattern-either:
+          - pattern: |
+              @$APP.post(...)
+              async def $FUNC(..., $DATA: dict = Body(...), ...):
+                ...
+          - pattern: |
+              @$APP.post(...)
+              def $FUNC(..., $DATA: dict = Body(...), ...):
+                ...
+          - pattern: |
+              @$APP.post(...)
+              async def $FUNC(..., $DATA: dict, ...):
+                ...
+          - pattern: |
+              @$APP.post(...)
+              def $FUNC(..., $DATA: dict, ...):
+                ...
+
+  - id: vibe.ssrf_requests
+    languages: [python]
+    severity: HIGH
+    message: "Potential SSRF: unvalidated URL from request parameter passed directly to HTTP client."
+    metadata:
+      cwe: CWE-918
+      confidence: "0.8"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: requests.get(request.args.get($PARAM), ...)
+          - pattern: requests.post(request.args.get($PARAM), ...)
+          - pattern: httpx.get(request.query_params.get($PARAM), ...)
+          - pattern: requests.get($URL, ...)
+      - pattern-inside: |
+          $URL = request.args.get(...)
+          ...
+
+  - id: vibe.path_traversal
+    languages: [python]
+    severity: HIGH
+    message: "Path traversal hazard: unsanitized file path opened from user request."
+    metadata:
+      cwe: CWE-22
+      confidence: "0.8"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: open($PATH, ...)
+          - pattern: send_file($PATH, ...)
+      - pattern-inside: |
+          $PATH = request.args.get(...)
+          ...
+      - pattern-not-inside: |
+          secure_filename(...)
+          ...
+
+  # ====================================================================
+  # CATEGORY 5: CONFIGURATION & NETWORKING
+  # ====================================================================
+  - id: vibe.overly_permissive_cors
+    languages: [python]
+    severity: MEDIUM
+    message: "CORS configured with wildcard origin ('*') allowing all domains to read responses."
+    metadata:
+      cwe: CWE-942
+      confidence: "0.85"
+      category: config
+    patterns:
+      - pattern-either:
+          - pattern: CORS($APP, origins="*")
+          - pattern: 'CORS($APP, resources={...: {"origins": "*" }})'
+          - pattern: allow_origins=["*"]
+
+  - id: vibe.debug_mode_enabled
+    languages: [python]
+    severity: MEDIUM
+    message: "Flask/Django debug mode enabled in application code. Turn off in production."
+    metadata:
+      cwe: CWE-489
+      confidence: "0.95"
+      category: config
+    patterns:
+      - pattern-either:
+          - pattern: $APP.run(debug=True, ...)
+          - pattern: $APP.run(..., debug=True)
+          - pattern: $APP.debug = True
+          - pattern: DEBUG = True
+
+  - id: vibe.host_0000_binding
+    languages: [python]
+    severity: LOW
+    message: "Server bound to 0.0.0.0, exposing to all interfaces. Bind to 127.0.0.1 in development."
+    metadata:
+      cwe: CWE-1327
+      confidence: "0.6"
+      category: config
+    patterns:
+      - pattern-either:
+          - pattern: $APP.run(host="0.0.0.0", ...)
+          - pattern: $APP.run(..., host="0.0.0.0")
+          - pattern: uvicorn.run(..., host="0.0.0.0", ...)
+
+  - id: vibe.verbose_error_response
+    languages: [python]
+    severity: LOW
+    message: "Exception traceback formatted directly in HTTP response. Sanitize errors."
+    metadata:
+      cwe: CWE-209
+      confidence: "0.6"
+      category: config
+    patterns:
+      - pattern-either:
+          - pattern: traceback.format_exc()
+          - pattern: return str($ERR), 500
+
+  - id: vibe.unsafe_deserialization
+    languages: [python]
+    severity: HIGH
+    message: "Unsafe deserialization via pickle or yaml.load without safe loader."
+    metadata:
+      cwe: CWE-502
+      confidence: "0.9"
+      category: code
+    patterns:
+      - pattern-either:
+          - pattern: pickle.loads($X)
+          - pattern: pickle.load($X)
+          - pattern: yaml.load($X)
+          - pattern: yaml.unsafe_load($X)
+      - pattern-not: yaml.load($X, Loader=yaml.SafeLoader)
+      - pattern-not: yaml.load($X, Loader=SafeLoader)
+
+  - id: vibe.insecure_password_handling
+    languages: [python]
+    severity: MEDIUM
+    message: "Weak password hashing using MD5 or SHA1. Use bcrypt, argon2, or passlib."
+    metadata:
+      cwe: CWE-328
+      confidence: "0.8"
+      category: code
+      sensitive_asset: credentials
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.md5($PW.encode(...)).hexdigest()
+          - pattern: hashlib.sha1($PW.encode(...)).hexdigest()
+          - pattern: hashlib.md5(...)
+          - pattern: hashlib.sha1(...)
+
+  - id: vibe.weak_cryptography_des
+    languages: [python]
+    severity: HIGH
+    message: "Insecure cryptographic cipher (DES/RC4). Use AES-GCM or ChaCha20-Poly1305."
+    metadata:
+      cwe: CWE-327
+      confidence: "0.9"
+      category: code
+    patterns:
+      - pattern-either:
+          - pattern: DES.new(...)
+          - pattern: ARC4.new(...)
+
+  - id: vibe.insecure_temp_file
+    languages: [python]
+    severity: MEDIUM
+    message: "Insecure temporary file creation via mktemp. Use NamedTemporaryFile."
+    metadata:
+      cwe: CWE-377
+      confidence: "0.9"
+      category: code
+    patterns:
+      - pattern: tempfile.mktemp(...)
+
+  - id: vibe.tarfile_path_traversal
+    languages: [python]
+    severity: HIGH
+    message: "Arbitrary file overwrite hazard during tar extraction. Use filter='data' (Python 3.12+) or validate members."
+    metadata:
+      cwe: CWE-22
+      confidence: "0.85"
+      category: code
+    patterns:
+      - pattern: $TAR.extractall($DIR)
+      - pattern-not: $TAR.extractall($DIR, filter=...)
+
+  # ====================================================================
+  # CATEGORY 6: AI / LLM APPLICATION RISKS
+  # ====================================================================
+  - id: vibe.llm_prompt_injection_concat
+    languages: [python]
+    severity: HIGH
+    message: "User input concatenated directly into LLM prompt without boundary delimiters or schema. Risk of prompt injection."
+    metadata:
+      cwe: CWE-77
+      confidence: "0.8"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: '$CLIENT.chat.completions.create(..., messages=[{"role": "user", "content": f"...{$INPUT}..."}], ...)'
+          - pattern: '$CLIENT.chat.completions.create(..., messages=[{"role": "user", "content": "..." + $INPUT + "..."}], ...)'
+          - pattern: '$PROMPT = f"...{$USER_TEXT}..."'
+
+  - id: vibe.llm_output_to_eval_exec
+    languages: [python]
+    severity: CRITICAL
+    message: "LLM output flowing directly into dynamic code execution (eval/exec). Risk of remote code execution."
+    metadata:
+      cwe: CWE-95
+      confidence: "0.9"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: eval($RESP.choices[0].message.content)
+          - pattern: exec($RESP.choices[0].message.content)
+
+  - id: vibe.llm_output_to_sql
+    languages: [python]
+    severity: CRITICAL
+    message: "LLM completion output concatenated into SQL execution without parameterized placeholders."
+    metadata:
+      cwe: CWE-89
+      confidence: "0.9"
+      category: code
+      taint: true
+    patterns:
+      - pattern-either:
+          - pattern: $CUR.execute($RESP.choices[0].message.content)
+          - pattern: $DB.execute($LLM_OUT)

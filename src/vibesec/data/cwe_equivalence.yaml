@@ -1,0 +1,42 @@
+# CWE equivalence classes.
+# Two findings in the same file at the same line/near-line and in the same class
+# are the same underlying defect and MUST be merged by the correlator.
+# rationale is shown to reviewers when a merge happens.
+version: 1
+classes:
+  network_binding:
+    mixed: [CWE-605, CWE-1327, CWE-16, CWE-489, CWE-693]
+    rationale: "Binding to all interfaces and insecure default configuration are the same exposure."
+  secrets:
+    mixed: [CWE-798, CWE-321, CWE-259, CWE-256, CWE-522, CWE-260, CWE-522]
+    rationale: "Hardcoded credential variants describe one exposed secret."
+  injection:
+    mixed: [CWE-89, CWE-564, CWE-943, CWE-77, CWE-78, CWE-94, CWE-95, CWE-96, CWE-97, CWE-98, CWE-99, CWE-470]
+    rationale: "Query/command/code injection from the same unsanitized flow are one injection defect."
+  xss:
+    mixed: [CWE-79, CWE-80, CWE-83, CWE-116, CWE-838]
+    rationale: "Reflected/stored/DOM XSS at one sink is one output-encoding defect."
+  path_traversal:
+    mixed: [CWE-22, CWE-23, CWE-36, CWE-73, CWE-99]
+    rationale: "Unsanitized file path variants describe one path traversal defect."
+  ssrf:
+    mixed: [CWE-918]
+    rationale: "Outbound request built from user input is one SSRF defect."
+  deserialization:
+    mixed: [CWE-502, CWE-611, CWE-776]
+    rationale: "Unsafe deserialization/XML entity variants are one parser-trust defect."
+  authz:
+    mixed: [CWE-284, CWE-285, CWE-639, CWE-862, CWE-863, CWE-306]
+    rationale: "Missing/incorrect authorization on the same route is one access-control defect."
+  csrf:
+    mixed: [CWE-352]
+    rationale: "Missing CSRF protection variants are one request-forgery defect."
+  tls:
+    mixed: [CWE-295, CWE-297, CWE-298, CWE-299, CWE-310, CWE-319]
+    rationale: "Certificate/TLS validation weaknesses at one call site are one defect."
+  logging:
+    mixed: [CWE-209, CWE-200, CWE-201, CWE-532, CWE-117]
+    rationale: "Sensitive information leaking through one response/log sink is one defect."
+  llm:
+    mixed: [CWE-1426, CWE-1427, CWE-77, CWE-94]
+    rationale: "Prompt-to-sink flows are one unsafe LLM output handling defect."

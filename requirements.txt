@@ -1,0 +1,8 @@
+# VibeSec Core Dependencies
+streamlit>=1.40.0
+pandas>=2.0.0
+fpdf2>=2.7.0
+pyyaml>=6.0.0
+requests>=2.31.0
+packaging>=23.0
+pip-audit>=2.7.0
