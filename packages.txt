@@ -1,0 +1,3 @@
+# System packages for Streamlit Community Cloud (installed via apt-get).
+# Required for cloning public GitHub repositories at scan time (git CLI).
+git

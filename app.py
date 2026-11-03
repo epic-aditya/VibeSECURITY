@@ -15,12 +15,18 @@ UI Technical Standards:
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import streamlit as st
+
+# Streamlit Community Cloud runs the app from the repository root, where the
+# package under src/ is not on sys.path. Add it so `import vibesec` resolves.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from vibesec import pipeline, storage
 from vibesec.exports import export_markdown
@@ -251,6 +257,10 @@ with st.sidebar:
 
 # --- Execute Scan ---
 if run_scan_btn:
+    # Reclaim the previous run's workspace so temporary files stay bounded.
+    previous_tmpdir = st.session_state.get("last_tmpdir")
+    if previous_tmpdir:
+        shutil.rmtree(previous_tmpdir, ignore_errors=True)
     tmpdir = Path(tempfile.mkdtemp(prefix="vibesec-run-"))
     st.session_state.last_tmpdir = str(tmpdir)
     prog_holder = st.empty()
@@ -274,7 +284,8 @@ if run_scan_btn:
                 )
                 st.session_state.last_result = res
         elif input_mode == "ZIP Archive" and zip_file is not None:
-            zip_path = tmpdir / zip_file.name
+            # Use only the basename: uploaded file names must not control paths.
+            zip_path = tmpdir / Path(zip_file.name or "upload.zip").name
             zip_path.write_bytes(zip_file.getbuffer())
             res = pipeline.run_pipeline(
                 zip_path=zip_path,
@@ -300,6 +311,8 @@ if run_scan_btn:
     except Exception as exc:
         prog_holder.empty()
         st.error(f"Scan failed: {exc}")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        st.session_state.last_tmpdir = None
 
 result = st.session_state.last_result
 
