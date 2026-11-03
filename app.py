@@ -195,6 +195,15 @@ button[data-baseweb="tab"][aria-selected="true"] {
     border-bottom: 2px solid #58a6ff !important;
     font-weight: 600 !important;
 }
+
+/* Hide Streamlit Community Cloud hosting chrome (creator avatar, Cloud badge,
+   and the top toolbar with Fork/GitHub/menu). These elements belong to the
+   hosting platform, not the app; selectors are unsupported and may change. */
+div[class*="_profileContainer_"],
+a[class*="_viewerBadge_"],
+[data-testid="stToolbar"] {
+    display: none !important;
+}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
