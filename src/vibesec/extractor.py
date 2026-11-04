@@ -27,6 +27,10 @@ SKIP_DIRS = {
 
 MAX_FILE_BYTES = 1_000_000  # never read giant files into memory during profiling
 
+# Resource guards for uploaded archives (prevents ZIP bombs / disk exhaustion).
+MAX_ARCHIVE_MEMBERS = 50_000
+MAX_UNCOMPRESSED_BYTES = 1_000_000_000  # 1 GB
+
 
 @dataclass
 class ProjectProfile:
@@ -58,7 +62,18 @@ def extract_zip(zip_path: str | Path, dest: Path) -> Path:
     dest = dest.resolve()
     dest.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path) as zf:
-        for member in zf.infolist():
+        members = zf.infolist()
+        if len(members) > MAX_ARCHIVE_MEMBERS:
+            raise ExtractionError(
+                f"Archive rejected: {len(members)} entries exceeds the {MAX_ARCHIVE_MEMBERS} entry limit."
+            )
+        total_uncompressed = sum(m.file_size for m in members)
+        if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
+            raise ExtractionError(
+                "Archive rejected: uncompressed size "
+                f"({total_uncompressed} bytes) exceeds the {MAX_UNCOMPRESSED_BYTES} byte limit."
+            )
+        for member in members:
             filename = member.filename.replace("\\", "/")
             # Reject absolute paths or Windows drive letters (e.g. C:/ or C:)
             if filename.startswith("/") or (len(filename) > 1 and filename[1] == ":"):
