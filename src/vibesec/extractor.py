@@ -11,6 +11,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,8 +30,10 @@ SKIP_DIRS = {
 MAX_FILE_BYTES = 1_000_000  # never read giant files into memory during profiling
 
 # Resource guards for uploaded archives (prevents ZIP bombs / disk exhaustion).
-MAX_ARCHIVE_MEMBERS = 50_000
-MAX_UNCOMPRESSED_BYTES = 1_000_000_000  # 1 GB
+MAX_ARCHIVE_MEMBERS = 10_000
+MAX_UNCOMPRESSED_BYTES = 250_000_000   # 250 MB
+MAX_ARCHIVE_BYTES = 50_000_000         # 50 MB
+DANGEROUS_EXTENSIONS = {".exe", ".dll", ".so", ".dylib", ".bin", ".com", ".msi"}
 
 
 @dataclass
@@ -58,44 +62,61 @@ class ExtractionError(Exception):
 
 
 def extract_zip(zip_path: str | Path, dest: Path) -> Path:
-    """Safely extract a ZIP upload, rejecting path-traversal entries, drive letters, and symlinks."""
+    """Safely extract a ZIP upload, rejecting path-traversal entries, drive letters, symlinks,
+    zip bombs, and dangerous executable file types.
+    """
     dest = dest.resolve()
     dest.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        members = zf.infolist()
-        if len(members) > MAX_ARCHIVE_MEMBERS:
-            raise ExtractionError(
-                f"Archive rejected: {len(members)} entries exceeds the {MAX_ARCHIVE_MEMBERS} entry limit."
-            )
-        total_uncompressed = sum(m.file_size for m in members)
-        if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
-            raise ExtractionError(
-                "Archive rejected: uncompressed size "
-                f"({total_uncompressed} bytes) exceeds the {MAX_UNCOMPRESSED_BYTES} byte limit."
-            )
-        for member in members:
-            filename = member.filename.replace("\\", "/")
-            # Reject absolute paths or Windows drive letters (e.g. C:/ or C:)
-            if filename.startswith("/") or (len(filename) > 1 and filename[1] == ":"):
-                raise ExtractionError(f"Unsafe archive entry rejected (absolute/drive path): {member.filename}")
-            # Reject directory traversal components
-            parts = Path(filename).parts
-            if any(p in ("..", "/", "\\") for p in parts):
-                raise ExtractionError(f"Unsafe archive entry rejected (traversal): {member.filename}")
-            # Reject symlinks (external_attr high byte = 0o120000)
-            if (member.external_attr >> 16) & 0o170000 == 0o120000:
-                raise ExtractionError(f"Unsafe archive entry rejected (symlink): {member.filename}")
-            # Verify resolved target remains strictly within dest directory
-            target_path = (dest / filename).resolve()
-            try:
-                target_path.relative_to(dest)
-            except ValueError:
-                raise ExtractionError(
-                    f"Unsafe archive entry rejected (escapes target): {member.filename}"
-                ) from None
+    zip_p = Path(zip_path)
+    if zip_p.is_file() and zip_p.stat().st_size > MAX_ARCHIVE_BYTES:
+        raise ExtractionError(
+            f"Archive rejected: file size ({zip_p.stat().st_size} bytes) exceeds the {MAX_ARCHIVE_BYTES} byte limit."
+        )
 
-        # Safe extraction
-        zf.extractall(dest)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            members = zf.infolist()
+            if len(members) > MAX_ARCHIVE_MEMBERS:
+                raise ExtractionError(
+                    f"Archive rejected: {len(members)} entries exceeds the {MAX_ARCHIVE_MEMBERS} entry limit."
+                )
+            total_uncompressed = sum(m.file_size for m in members)
+            if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
+                raise ExtractionError(
+                    "Archive rejected: uncompressed size "
+                    f"({total_uncompressed} bytes) exceeds the {MAX_UNCOMPRESSED_BYTES} byte limit."
+                )
+            for member in members:
+                filename = member.filename.replace("\\", "/")
+                # Reject absolute paths or Windows drive letters (e.g. C:/ or C:)
+                if filename.startswith("/") or (len(filename) > 1 and filename[1] == ":"):
+                    raise ExtractionError(f"Unsafe archive entry rejected (absolute/drive path): {member.filename}")
+                # Reject directory traversal components
+                parts = Path(filename).parts
+                if any(p in ("..", "/", "\\") for p in parts):
+                    raise ExtractionError(f"Unsafe archive entry rejected (traversal): {member.filename}")
+                # Reject symlinks (external_attr high byte = 0o120000)
+                if (member.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise ExtractionError(f"Unsafe archive entry rejected (symlink): {member.filename}")
+                # Reject zip bombs (excessive compression ratio > 100:1)
+                if member.compress_size > 0 and (member.file_size / member.compress_size) > 100 and member.file_size > 100_000:
+                    raise ExtractionError(f"Unsafe archive entry rejected (excessive compression ratio): {member.filename}")
+                # Reject dangerous executable binaries
+                if Path(filename).suffix.lower() in DANGEROUS_EXTENSIONS:
+                    raise ExtractionError(f"Unsafe archive entry rejected (binary executable not allowed): {member.filename}")
+                # Verify resolved target remains strictly within dest directory
+                target_path = (dest / filename).resolve()
+                try:
+                    target_path.relative_to(dest)
+                except ValueError:
+                    raise ExtractionError(
+                        f"Unsafe archive entry rejected (escapes target): {member.filename}"
+                    ) from None
+
+            # Safe extraction
+            zf.extractall(dest)
+    except zipfile.BadZipFile as exc:
+        raise ExtractionError(f"Corrupted or invalid ZIP archive: {exc}") from exc
 
     # If the archive wrapped everything in a single top-level dir, descend into it.
     entries = [p for p in dest.iterdir() if p.name not in {".git", "__MACOSX"}]
@@ -105,21 +126,78 @@ def extract_zip(zip_path: str | Path, dest: Path) -> Path:
 
 
 def clone_github(url: str, dest: Path) -> Path:
-    """Shallow, read-only clone of a public GitHub repository."""
+    """Shallow, read-only clone of a public GitHub repository.
+    Falls back to archive ZIP download over HTTPS if git is not installed or clone fails.
+    """
     match = GITHUB_URL_RE.match(url.strip())
     if not match:
         raise ExtractionError("Only public https://github.com/<owner>/<repo> URLs are supported.")
+    owner = match.group("owner")
+    repo = match.group("repo")
     dest.mkdir(parents=True, exist_ok=True)
     repo_dest = (dest / "repo").resolve()
-    result = subprocess.run(
-        ["git", "clone", "--depth", "1", "--single-branch", "--", url.strip(), str(repo_dest)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if result.returncode != 0:
-        raise ExtractionError(f"git clone failed: {result.stderr.strip()[:300]}")
-    return repo_dest
+
+    # Strategy 1: Shallow git clone if git binary is available
+    git_bin = shutil.which("git")
+    if git_bin:
+        try:
+            result = subprocess.run(
+                [git_bin, "clone", "--depth", "1", "--single-branch", "--", url.strip(), str(repo_dest)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0 and repo_dest.is_dir():
+                return repo_dest
+        except Exception:
+            pass
+
+    # Strategy 2: Download repository ZIP archive via HTTPS directly from GitHub
+    archive_zip_tmp = dest / f"{repo}.zip"
+    branch_candidates = ["HEAD", "main", "master"]
+    downloaded = False
+    last_err: Exception | None = None
+
+    for branch in branch_candidates:
+        archive_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip" if branch != "HEAD" else f"https://github.com/{owner}/{repo}/archive/HEAD.zip"
+        try:
+            req = urllib.request.Request(
+                archive_url,
+                headers={"User-Agent": "VibeSec-Scanner/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                data = resp.read(MAX_ARCHIVE_BYTES + 1)
+                if len(data) > MAX_ARCHIVE_BYTES:
+                    raise ExtractionError(
+                        f"GitHub repository archive exceeds {MAX_ARCHIVE_BYTES} byte limit."
+                    )
+                archive_zip_tmp.write_bytes(data)
+                downloaded = True
+                break
+        except urllib.error.HTTPError as http_err:
+            last_err = http_err
+            if http_err.code in (404, 403):
+                continue
+            break
+        except urllib.error.URLError as url_err:
+            last_err = url_err
+            break
+        except Exception as exc:
+            last_err = exc
+            break
+
+    if downloaded and archive_zip_tmp.is_file():
+        return extract_zip(archive_zip_tmp, repo_dest)
+
+    if isinstance(last_err, urllib.error.HTTPError):
+        if last_err.code == 404:
+            raise ExtractionError(f"Repository {owner}/{repo} not found or is private (HTTP 404). Only public GitHub repositories are supported.")
+        raise ExtractionError(f"Failed to fetch repository from GitHub: HTTP {last_err.code}.")
+    elif isinstance(last_err, urllib.error.URLError):
+        raise ExtractionError(f"Network error accessing GitHub: {last_err.reason}.")
+    elif last_err:
+        raise ExtractionError(f"Failed to retrieve repository from GitHub: {last_err}")
+    raise ExtractionError(f"Repository {owner}/{repo} could not be cloned or downloaded.")
 
 
 

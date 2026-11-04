@@ -15,6 +15,8 @@ UI Technical Standards:
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import sys
 import tempfile
@@ -128,17 +130,7 @@ CUSTOM_CSS = """
     --bg-surface: var(--secondary-background-color, #f6f8fa);
     --border-subtle: rgba(128, 128, 128, 0.25);
     --border-strong: rgba(128, 128, 128, 0.45);
-    --text-muted: rgba(128, 128, 128, 0.9);
-}
-
-@media (prefers-color-scheme: dark) {
-    :root {
-        --text-primary: #e6edf3;
-        --bg-surface: #161b22;
-        --border-subtle: #30363d;
-        --border-strong: #8b949e;
-        --text-muted: #8b949e;
-    }
+    --text-muted: rgba(128, 128, 128, 0.85);
 }
 
 body, [data-testid="stAppViewContainer"] {
@@ -174,7 +166,8 @@ div[data-testid="stMetricLabel"] {
     font-size: 0.75rem !important;
     text-transform: uppercase !important;
     letter-spacing: 0.05em;
-    color: var(--text-muted) !important;
+    color: var(--text-color, var(--text-primary)) !important;
+    opacity: 0.8;
 }
 
 button[kind="primary"] {
@@ -186,12 +179,10 @@ button[kind="primary"] {
 }
 
 button[data-baseweb="tab"] {
-    color: var(--text-muted) !important;
     font-weight: 500 !important;
 }
 
 button[data-baseweb="tab"][aria-selected="true"] {
-    color: var(--text-color, var(--text-primary)) !important;
     border-bottom: 2px solid #58a6ff !important;
     font-weight: 600 !important;
 }
@@ -219,32 +210,39 @@ with st.sidebar:
     st.caption("Static Application Security Testing for AI-Generated Software")
     st.divider()
 
+    allow_local = os.environ.get("VIBESEC_ALLOW_LOCAL_PATH", "").strip() in ("1", "true", "yes", "on")
+    target_options = ["ZIP Archive", "Public GitHub Repository"]
+    if allow_local:
+        target_options.append("Local Directory (Self-Hosted)")
+
     input_mode = st.radio(
         "Target Source",
-        ["Local Path", "ZIP Archive", "Public GitHub Repository"],
+        target_options,
+        index=0,
         label_visibility="collapsed",
     )
     local_path = None
     zip_file = None
     github_url = None
 
-    if input_mode == "Local Path":
+    if input_mode == "ZIP Archive":
+        zip_file = st.file_uploader(
+            "Upload application archive (.zip)",
+            type=["zip"],
+            help="Zip archive containing source code (max 50 MB compressed, 250 MB uncompressed)",
+        )
+    elif input_mode == "Public GitHub Repository":
+        github_url = st.text_input(
+            "GitHub repository URL",
+            placeholder="https://github.com/org/repo",
+            help="Public GitHub repository URL (shallow cloned or downloaded as ZIP)",
+        )
+    elif allow_local and input_mode == "Local Directory (Self-Hosted)":
         local_path = st.text_input(
             "Local Directory Path",
             value="",
             placeholder="/path/to/project",
-            help="Path to repository or extracted application directory",
-        )
-    elif input_mode == "ZIP Archive":
-        zip_file = st.file_uploader(
-            "Upload application archive (.zip)",
-            type=["zip"],
-            help="Zip archive containing source code",
-        )
-    else:
-        github_url = st.text_input(
-            "GitHub repository URL",
-            placeholder="https://github.com/org/repo",
+            help="Self-hosted local directory path to scan",
         )
 
     offline_mode = st.checkbox(
@@ -280,19 +278,11 @@ if run_scan_btn:
 
     try:
         pdf_out = tmpdir / "vibesec-security-report.pdf"
-        if input_mode == "Local Path" and local_path:
-            p = Path(local_path)
-            if not p.exists():
-                st.error(f"Path does not exist: {local_path}")
-            else:
-                res = pipeline.run_pipeline(
-                    dir_path=p,
-                    no_network=offline_mode,
-                    pdf_path=pdf_out,
-                    progress_callback=update_progress,
-                )
-                st.session_state.last_result = res
-        elif input_mode == "ZIP Archive" and zip_file is not None:
+        if input_mode == "ZIP Archive":
+            if zip_file is None:
+                prog_holder.empty()
+                st.error("Please upload a ZIP archive containing project source code before scanning.")
+                st.stop()
             # Use only the basename: uploaded file names must not control paths.
             zip_path = tmpdir / Path(zip_file.name or "upload.zip").name
             zip_path.write_bytes(zip_file.getbuffer())
@@ -303,16 +293,39 @@ if run_scan_btn:
                 progress_callback=update_progress,
             )
             st.session_state.last_result = res
-        elif input_mode == "Public GitHub Repository" and github_url:
+        elif input_mode == "Public GitHub Repository":
+            if not github_url or not github_url.strip():
+                prog_holder.empty()
+                st.error("Please enter a valid public GitHub repository URL (e.g. https://github.com/owner/repo).")
+                st.stop()
             res = pipeline.run_pipeline(
-                github_url=github_url,
+                github_url=github_url.strip(),
+                no_network=offline_mode,
+                pdf_path=pdf_out,
+                progress_callback=update_progress,
+            )
+            st.session_state.last_result = res
+        elif allow_local and input_mode == "Local Directory (Self-Hosted)":
+            if not local_path or not local_path.strip():
+                prog_holder.empty()
+                st.error("Please provide a directory path to scan.")
+                st.stop()
+            p = Path(local_path.strip()).resolve()
+            if not p.is_dir():
+                prog_holder.empty()
+                st.error("Specified directory does not exist or is not accessible.")
+                st.stop()
+            res = pipeline.run_pipeline(
+                dir_path=p,
                 no_network=offline_mode,
                 pdf_path=pdf_out,
                 progress_callback=update_progress,
             )
             st.session_state.last_result = res
         else:
+            prog_holder.empty()
             st.error("Please provide a valid scan target.")
+            st.stop()
 
         prog_holder.empty()
         if st.session_state.last_result:
@@ -721,6 +734,11 @@ with tabs[3]:
 
         with tempfile.TemporaryDirectory(prefix="vibesec-export-") as exp_tmp:
             exp_dir = Path(exp_tmp)
+            safe_target = re.sub(
+                r"[^a-zA-Z0-9_\-\.]",
+                "_",
+                (result.target_name or "scan").replace("https://github.com/", "").replace("/", "_"),
+            ).strip("_") or "scan"
             asm_dict = result.asm.to_dict() if result.asm else None
             cov_dict = result.coverage.to_dict() if result.coverage else None
             meta = dict(getattr(result, "metadata", {}) or {})
@@ -756,7 +774,7 @@ with tabs[3]:
                     st.download_button(
                         "Download PDF Report",
                         data=pdf_bytes,
-                        file_name=f"{result.target_name}-security-report.pdf",
+                        file_name=f"{safe_target}-security-report.pdf",
                         mime="application/pdf",
                     )
 
@@ -785,7 +803,7 @@ with tabs[3]:
                     st.download_button(
                         "Download Markdown Report",
                         data=md_text,
-                        file_name=f"{result.target_name}-report.md",
+                        file_name=f"{safe_target}-report.md",
                         mime="text/markdown",
                     )
 
@@ -809,7 +827,7 @@ with tabs[3]:
                     st.download_button(
                         "Download SARIF",
                         data=sarif_text,
-                        file_name=f"{result.target_name}.sarif",
+                        file_name=f"{safe_target}.sarif",
                         mime="application/json",
                     )
 
@@ -821,7 +839,7 @@ with tabs[3]:
                     st.download_button(
                         "Download SBOM",
                         data=sbom_text,
-                        file_name=f"{result.target_name}-cyclonedx.json",
+                        file_name=f"{safe_target}-cyclonedx.json",
                         mime="application/json",
                     )
 

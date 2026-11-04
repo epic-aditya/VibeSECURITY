@@ -195,17 +195,36 @@ vibesec clear
 
 ---
 
-## Streamlit Web Dashboard
+## Streamlit Web Dashboard & Cloud Deployment
 
+### 1. Running Locally
 Launch the browser-based security assessment portal:
 
 ```bash
 streamlit run app.py
 ```
 
+### 2. Deployment on Streamlit Community Cloud & Docker
+VibeSec is fully hardened for cloud and containerized deployment:
+- **Primary Input**: Browser-based ZIP archive upload with defense-in-depth security guards against directory traversal, symlinks, zip bombs (ratio > 100:1), and malicious executable binaries.
+- **GitHub Ingestion**: Shallow clones public repositories or falls back to direct HTTPS archive downloads when `git` binary is not installed in the container.
+- **Path Isolation**: Uploaded archives extract into isolated ephemeral directories; internal server paths are never exposed to users or in exported reports.
+- **Ephemeral Storage Resilience**: Scan history utilizes SQLite with automatic fallback to in-memory mode if the filesystem is read-only.
+- **Graceful Scanner Degradation**: When optional external binaries (Gitleaks, Trivy) are absent from the environment, VibeSec records `SKIPPED` tool status and proceeds with internal SAST, AST taint, and configuration exposure analyzers without failure.
+
+### 3. Environment Variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VIBESEC_ALLOW_LOCAL_PATH` | `0` | Enable local filesystem path scanning in the web UI (useful for self-hosted instances). |
+| `VIBESEC_DB_PATH` | `~/.vibesec/vibesec.db` | Custom filesystem path for SQLite scan history storage. |
+| `VIBESEC_OFFLINE` | `0` | Force offline mode, disabling external network queries and using neutral EPSS/KEV signals. |
+
+### 4. Interactive Tabs
+
 The portal includes 4 dedicated analysis tabs:
 
-1. **Scan & Execution**: Configure local directory paths, upload ZIP archives, or specify GitHub URLs; trigger scans with real-time stage progress bars and view executive metrics.
+1. **Scan & Execution**: Upload ZIP archives or specify GitHub URLs; trigger scans with real-time stage progress bars and view executive metrics.
 2. **Attack Surface & Paths**: Review discovered entrypoints, authentication states, parameter validations, application map graph visualizer, and ranked attack paths with step-by-step traces.
 3. **Dependencies & SCA Intelligence**: Inspect lockfile packages, license compliance summaries, and prioritized dependency upgrade plans ordered by runtime exposure and reachability.
 4. **Reports & Exports**: Generate and download verifiable PDF assessment reports, Developer Markdown files, GitHub-compatible SARIF files, and CycloneDX 1.5 JSON SBOMs.

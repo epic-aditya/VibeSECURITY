@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,13 +25,23 @@ CREATE TABLE IF NOT EXISTS findings (
 );
 """
 
-DB_PATH = Path.home() / ".vibesec" / "vibesec.db"
+
+def _get_default_db_path() -> Path:
+    env_path = os.environ.get("VIBESEC_DB_PATH", "").strip()
+    if env_path:
+        return Path(env_path)
+    return Path.home() / ".vibesec" / "vibesec.db"
 
 
 def _connect(db_path: Path | None = None) -> sqlite3.Connection:
-    path = db_path or DB_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    path = db_path or _get_default_db_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+    except Exception:
+        # Fallback to in-memory database if filesystem is read-only or inaccessible
+        conn = sqlite3.connect(":memory:")
+
     conn.executescript(SCHEMA)
 
     # Lightweight migration: add new optional columns if not present

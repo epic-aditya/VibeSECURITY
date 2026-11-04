@@ -302,8 +302,40 @@ def analyze_config_and_frontend_exposure(root: Path) -> list[Finding]:
         is_py = rel.endswith(".py")
         is_js = rel.endswith((".js", ".ts"))
 
+        in_block_comment = False
+        in_py_docstring = False
+        py_doc_delimiter = ""
+
         for idx, line in enumerate(lines, 1):
             s = line.strip()
+            if not s:
+                continue
+
+            if is_js:
+                if in_block_comment:
+                    if "*/" in line:
+                        in_block_comment = False
+                    continue
+                if "/*" in s and "*/" not in s:
+                    in_block_comment = True
+                    if s.startswith("/*"):
+                        continue
+                if s.startswith(("//", "/*", "*", "*/")):
+                    continue
+
+            if is_py:
+                if in_py_docstring:
+                    if py_doc_delimiter in line:
+                        in_py_docstring = False
+                    continue
+                if s.startswith(('"""', "'''")):
+                    delim = '"""' if s.startswith('"""') else "'''"
+                    if s.count(delim) == 1:
+                        in_py_docstring = True
+                        py_doc_delimiter = delim
+                    continue
+                if s.startswith("#"):
+                    continue
 
             # Hardcoded credentials inside connection URIs (mongodb://user:pass@host)
             m_uri = re.search(r"""(?:mongodb|postgres|postgresql|mysql|mariadb|redis|amqp|amqps)://([^:\s'"]+):([^@\s'"]+)@([^\s'"]+)""", line)

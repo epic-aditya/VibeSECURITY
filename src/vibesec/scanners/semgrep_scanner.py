@@ -51,12 +51,31 @@ def run_semgrep(
     if default_rules and not is_off:
         configs.append("p/security-audit")
     if include_vibe_rules and VIBE_RULES_DIR.is_dir():
-        rule_files = sorted(list(VIBE_RULES_DIR.glob("*.yaml")) + list(VIBE_RULES_DIR.glob("*.yml")))
-        if rule_files:
-            for rf in rule_files:
-                configs.append(str(rf))
+        # Language-aware rule filtering to minimize scanner startup latency
+        has_py = any(target.rglob("*.py")) if target.is_dir() else (target.suffix.lower() == ".py")
+        has_js = any(
+            p.suffix.lower() in (".js", ".jsx", ".ts", ".tsx", ".mjs") for p in target.rglob("*") if p.is_file()
+        ) if target.is_dir() else (target.suffix.lower() in (".js", ".jsx", ".ts", ".tsx", ".mjs"))
+
+        if has_py and not has_js:
+            py_rule = VIBE_RULES_DIR / "vibe_python.yaml"
+            if py_rule.is_file():
+                configs.append(str(py_rule))
+            else:
+                configs.append(str(VIBE_RULES_DIR))
+        elif has_js and not has_py:
+            js_rule = VIBE_RULES_DIR / "vibe_javascript.yaml"
+            if js_rule.is_file():
+                configs.append(str(js_rule))
+            else:
+                configs.append(str(VIBE_RULES_DIR))
         else:
-            configs.append(str(VIBE_RULES_DIR))
+            rule_files = sorted(list(VIBE_RULES_DIR.glob("*.yaml")) + list(VIBE_RULES_DIR.glob("*.yml")))
+            if rule_files:
+                for rf in rule_files:
+                    configs.append(str(rf))
+            else:
+                configs.append(str(VIBE_RULES_DIR))
     if not configs and VIBE_RULES_DIR.is_dir():
         configs.append(str(VIBE_RULES_DIR))
 

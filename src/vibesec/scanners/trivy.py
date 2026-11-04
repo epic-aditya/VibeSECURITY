@@ -37,11 +37,11 @@ def run_trivy(target: Path, offline: bool = False) -> dict:
         "--exit-code", "0",
     ]
     if is_off:
-        cmd.append("--offline-scan")
+        cmd.extend(["--offline-scan", "--skip-db-update", "--skip-java-db-update"])
     cmd.append(str(target))
 
     try:
-        data = run_json(cmd, timeout=600)
+        data = run_json(cmd, timeout=180)
         if isinstance(data, dict):
             data["_state"] = "OK"
             data["_version"] = version

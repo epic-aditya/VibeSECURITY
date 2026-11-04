@@ -152,7 +152,7 @@ def run_pipeline(
         if zip_path:
             root = extractor.extract_zip(zip_path, workspace)
             target_name = Path(zip_path).name
-            source = str(zip_path)
+            source = f"archive: {target_name}"
         elif dir_path:
             root = Path(dir_path).resolve()
             target_name = root.name
@@ -160,7 +160,7 @@ def run_pipeline(
         else:
             root = extractor.clone_github(github_url or "", workspace)
             target_name = github_url or ""
-            source = github_url or ""
+            source = f"repo: {github_url}"
 
         _report(15, "Inspecting files and profiling project structure...")
         profile = extractor.profile_project(root)
@@ -175,7 +175,7 @@ def run_pipeline(
         result.warnings.extend(reach_map.warnings)
 
         # Stage 3: scanners as subprocesses
-        _report(45, "Running scanner toolchain (Semgrep, Gitleaks, Trivy, Bandit)...")
+        _report(35, "Running Gitleaks secret detection...")
         gitleaks_raw: dict = {"results": []}
         semgrep_raw: dict = {"results": []}
         trivy_raw: dict = {}
@@ -204,30 +204,35 @@ def run_pipeline(
         except Exception as exc:
             statuses.append(_make_status("gitleaks", {}, exc))
 
+        _report(45, "Running Semgrep static analysis...")
         try:
             semgrep_raw = run_semgrep(root, offline=is_offline)
             statuses.append(_make_status("semgrep", semgrep_raw))
         except Exception as exc:
             statuses.append(_make_status("semgrep", {}, exc))
 
+        _report(55, "Running Trivy vulnerability and misconfiguration scan...")
         try:
             trivy_raw = run_trivy(root, offline=is_offline)
             statuses.append(_make_status("trivy", trivy_raw))
         except Exception as exc:
             statuses.append(_make_status("trivy", {}, exc))
 
+        _report(62, "Running pip-audit dependency scanner...")
         try:
             pip_audit_raw = run_pip_audit(root)
             statuses.append(_make_status("pip-audit", pip_audit_raw))
         except Exception as exc:
             statuses.append(_make_status("pip-audit", {}, exc))
 
+        _report(66, "Running npm audit dependency scanner...")
         try:
             npm_audit_raw = run_npm_audit(root)
             statuses.append(_make_status("npm-audit", npm_audit_raw))
         except Exception as exc:
             statuses.append(_make_status("npm-audit", {}, exc))
 
+        _report(70, "Running Bandit Python AST security analyzer...")
         try:
             bandit_raw = run_bandit(root)
             statuses.append(_make_status("bandit", bandit_raw))
@@ -417,7 +422,11 @@ def run_pipeline(
         ep_count = len(result.asm.entry_points) if result.asm else 0
         web_fws = [fw for fw in fws if fw in {"FastAPI", "Flask", "Express", "Next.js", "Django", "Koa", "NestJS"}]
 
-        if web_fws and ep_count == 0 and result.profile.get("app_type", "server") == "server":
+        failed_tools = [st.name for st in statuses if st.state == ToolState.FAILED]
+        if failed_tools:
+            cov_status = "INCOMPLETE"
+            cov_reason = f"Scanner toolchain failure: {', '.join(failed_tools)} failed during execution."
+        elif web_fws and ep_count == 0 and result.profile.get("app_type", "server") == "server":
             cov_status = "INCOMPLETE"
             cov_reason = f"Web framework(s) {', '.join(web_fws)} detected but 0 entry points were discovered."
         else:

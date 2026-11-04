@@ -9,6 +9,8 @@ pip-audit, npm audit, and Bandit.
 
 from __future__ import annotations
 
+import ast
+import io
 import re
 from pathlib import Path
 
@@ -140,6 +142,162 @@ def _rel(path: str, root: Path) -> str:
     return p_str.lstrip("./")
 
 
+_PARSED_AST_CACHE: dict[str, tuple[set[int], dict[int, list[tuple[list[str], ast.AST]]]]] = {}
+
+
+def _resolve_source_path(root: Path, rel_file: str) -> Path | None:
+    if not rel_file:
+        return None
+    candidates = [
+        (root / rel_file).resolve(),
+        Path(rel_file).resolve(),
+        (root / Path(rel_file).name).resolve(),
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    f_name = Path(rel_file).name
+    for p in root.rglob(f_name):
+        if p.is_file():
+            return p.resolve()
+    return None
+
+
+def is_comment_or_docstring_only(
+    root: Path,
+    rel_file: str,
+    start: int,
+    end: int | None = None,
+    rule_id: str = "",
+    category: str = "",
+    evidence: str = "",
+) -> bool:
+    """Determine if a finding's location in source code is purely non-executable comment/docstring,
+    or if a secret/credential rule matched non-credential code (such as a username assignment
+    or an environment-variable lookup).
+    """
+    if not rel_file:
+        return False
+    path = _resolve_source_path(root, rel_file)
+    if not path or not path.is_file():
+        return False
+
+    end_line = end or start
+    suffix = path.suffix.lower()
+
+    # Python syntax & AST-aware validation
+    if suffix == ".py":
+        cache_key = str(path).lower()
+        if cache_key not in _PARSED_AST_CACHE:
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+                tree = ast.parse(content, filename=str(path))
+                exec_lines: set[int] = set()
+                assignments: dict[int, list[tuple[list[str], ast.AST]]] = {}
+
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.stmt):
+                        # Treat bare string expressions (docstrings) as non-executable
+                        if (
+                            isinstance(node, ast.Expr)
+                            and isinstance(node.value, ast.Constant)
+                            and isinstance(node.value.value, str)
+                        ):
+                            continue
+                        n_start = getattr(node, "lineno", 0)
+                        n_end = getattr(node, "end_lineno", n_start)
+                        for ln in range(n_start, n_end + 1):
+                            exec_lines.add(ln)
+
+                        if isinstance(node, ast.Assign):
+                            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                            assignments.setdefault(node.lineno, []).append((names, node.value))
+                        elif isinstance(node, ast.AnnAssign):
+                            if isinstance(node.target, ast.Name):
+                                assignments.setdefault(node.lineno, []).append(([node.target.id], node.value))
+                _PARSED_AST_CACHE[cache_key] = (exec_lines, assignments)
+            except Exception:
+                _PARSED_AST_CACHE[cache_key] = (set(), {})
+
+        exec_lines, assignments = _PARSED_AST_CACHE[cache_key]
+        target_lines = set(range(start, end_line + 1))
+
+        # If none of the matched lines contain executable statements, it is purely a comment/docstring
+        if target_lines.isdisjoint(exec_lines):
+            return True
+
+        # Check if a secret/credential finding matched non-credential assignments or env lookups
+        is_secret_rule = (
+            category == "secret"
+            or "credential" in rule_id.lower()
+            or "secret" in rule_id.lower()
+            or "password" in rule_id.lower()
+            or "key" in rule_id.lower()
+        )
+        if is_secret_rule:
+            non_sensitive_names = {
+                "username", "user", "user_name", "login", "host", "hostname",
+                "port", "email", "database", "db", "dbname", "name", "author",
+                "sender", "recipient", "account", "account_id", "domain",
+            }
+            all_safe = True
+            found_any_assignment = False
+            for ln in target_lines:
+                line_assigns = assignments.get(ln, [])
+                for names, val_node in line_assigns:
+                    found_any_assignment = True
+                    # Check if variable name is benign/non-sensitive
+                    if names and all(n.lower() in non_sensitive_names for n in names):
+                        continue
+                    # Check if value is an environment variable / config lookup
+                    if isinstance(val_node, ast.Call):
+                        call_func = getattr(val_node.func, "attr", "") or getattr(val_node.func, "id", "")
+                        if call_func in ("getenv", "get", "environ", "Secret", "fetch", "get_secret"):
+                            continue
+                    if isinstance(val_node, ast.Subscript):
+                        sub_id = getattr(val_node.value, "id", "") or getattr(val_node.value, "attr", "")
+                        if sub_id in ("environ", "env"):
+                            continue
+                    # Genuine literal secret assignment
+                    all_safe = False
+                    break
+            if found_any_assignment and all_safe:
+                return True
+
+    # JavaScript / TypeScript comment validation
+    elif suffix in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            lines = []
+
+        if lines:
+            all_comment = True
+            in_block = False
+            for lno in range(1, len(lines) + 1):
+                s = lines[lno - 1].strip()
+                if "/*" in s and "*/" not in s:
+                    in_block = True
+                if in_block:
+                    if "*/" in s:
+                        in_block = False
+                    continue
+                if lno in range(start, end_line + 1):
+                    if s and not s.startswith(("//", "/*", "*", "*/")):
+                        all_comment = False
+                        break
+            if all_comment:
+                return True
+
+    # Fallback check on evidence string
+    if evidence:
+        ev_lines = [l.strip() for l in evidence.strip().splitlines() if l.strip()]
+        if ev_lines and all(l.startswith(("#", "//", "/*", "*", "*/", '"""', "'''")) for l in ev_lines):
+            return True
+
+    return False
+
+
 def find_manifest_line(target_path: str, pkg_name: str, root: Path) -> int:
     """Find the 1-indexed line number of a package in its manifest or lockfile."""
     if not pkg_name or pkg_name == "unknown-package":
@@ -234,6 +392,10 @@ def normalize_gitleaks(raw: dict, root: Path) -> list[Finding]:
         rule = item.get("RuleID") or item.get("Rule") or "gitleaks.secret"
         match = (item.get("Match") or item.get("Secret") or "")[:200]
         if _is_placeholder_secret(rel_f, match):
+            continue
+        if is_comment_or_docstring_only(
+            root, rel_f, start, end, rule_id=f"gitleaks.{rule}", category="secret", evidence=match
+        ):
             continue
         findings.append(
             Finding(
@@ -366,6 +528,10 @@ def normalize_semgrep(raw: dict, root: Path) -> list[Finding]:
                     pass
 
         rel_path = _rel(item.get("path", ""), root)
+        if is_comment_or_docstring_only(
+            root, rel_path, start, end, rule_id=check_id, category=category, evidence=extra.get("lines", "")
+        ):
+            continue
         findings.append(
             Finding(
                 rule_id=check_id,
@@ -646,6 +812,10 @@ def normalize_bandit(raw: dict, root: Path) -> list[Finding]:
         cat = "secret" if test_id in ("B105", "B106", "B107") or cwe_id == "CWE-798" else "code"
 
         bandit_rel = _rel(item.get("filename", ""), root)
+        if is_comment_or_docstring_only(
+            root, bandit_rel, start_line, end_line, rule_id=f"bandit.{test_id}", category=cat, evidence=item.get("code", "")
+        ):
+            continue
         findings.append(
             Finding(
                 rule_id=f"bandit.{test_id}",
