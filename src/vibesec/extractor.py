@@ -30,10 +30,10 @@ SKIP_DIRS = {
 MAX_FILE_BYTES = 1_000_000  # never read giant files into memory during profiling
 
 # Resource guards for uploaded archives (prevents ZIP bombs / disk exhaustion).
-MAX_ARCHIVE_MEMBERS = 10_000
-MAX_UNCOMPRESSED_BYTES = 1_000_000_000  # 1 GB
-MAX_ARCHIVE_BYTES = 200_000_000         # 200 MB
-DANGEROUS_EXTENSIONS = {".exe", ".dll", ".so", ".dylib", ".bin", ".com", ".msi"}
+MAX_ARCHIVE_MEMBERS = 50_000
+MAX_UNCOMPRESSED_BYTES = 5_000_000_000  # 5 GB
+MAX_ARCHIVE_BYTES = 1_073_741_824       # 1 GB
+DANGEROUS_EXTENSIONS = {".exe", ".dll", ".com", ".msi"}
 
 
 @dataclass
@@ -86,6 +86,7 @@ def extract_zip(zip_path: str | Path, dest: Path) -> Path:
                     "Archive rejected: uncompressed size "
                     f"({total_uncompressed} bytes) exceeds the {MAX_UNCOMPRESSED_BYTES} byte limit."
                 )
+            safe_members = []
             for member in members:
                 filename = member.filename.replace("\\", "/")
                 # Reject absolute paths or Windows drive letters (e.g. C:/ or C:)
@@ -95,11 +96,11 @@ def extract_zip(zip_path: str | Path, dest: Path) -> Path:
                 parts = Path(filename).parts
                 if any(p in ("..", "/", "\\") for p in parts):
                     raise ExtractionError(f"Unsafe archive entry rejected (traversal): {member.filename}")
-                # Reject symlinks (external_attr high byte = 0o120000)
+                # Skip symlinks (external_attr high byte = 0o120000) rather than failing entire extraction
                 if (member.external_attr >> 16) & 0o170000 == 0o120000:
-                    raise ExtractionError(f"Unsafe archive entry rejected (symlink): {member.filename}")
-                # Reject zip bombs (excessive compression ratio > 100:1)
-                if member.compress_size > 0 and (member.file_size / member.compress_size) > 100 and member.file_size > 100_000:
+                    continue
+                # Reject zip bombs (excessive compression ratio > 100:1 on large entries)
+                if member.compress_size > 0 and (member.file_size / member.compress_size) > 100 and member.file_size > 50_000_000:
                     raise ExtractionError(f"Unsafe archive entry rejected (excessive compression ratio): {member.filename}")
                 # Reject dangerous executable binaries
                 if Path(filename).suffix.lower() in DANGEROUS_EXTENSIONS:
@@ -112,16 +113,20 @@ def extract_zip(zip_path: str | Path, dest: Path) -> Path:
                     raise ExtractionError(
                         f"Unsafe archive entry rejected (escapes target): {member.filename}"
                     ) from None
+                safe_members.append(member)
 
-            # Safe extraction
-            zf.extractall(dest)
+            # Safe extraction of validated members only
+            zf.extractall(dest, members=safe_members)
     except zipfile.BadZipFile as exc:
         raise ExtractionError(f"Corrupted or invalid ZIP archive: {exc}") from exc
 
     # If the archive wrapped everything in a single top-level dir, descend into it.
-    entries = [p for p in dest.iterdir() if p.name not in {".git", "__MACOSX"}]
-    if len(entries) == 1 and entries[0].is_dir():
-        return entries[0]
+    ignored_names = {".git", "__MACOSX", ".DS_Store", "Thumbs.db"}
+    entries = [p for p in dest.iterdir() if p.name not in ignored_names]
+    dirs = [p for p in entries if p.is_dir()]
+    files = [p for p in entries if p.is_file()]
+    if len(dirs) == 1 and len(files) == 0:
+        return dirs[0]
     return dest
 
 

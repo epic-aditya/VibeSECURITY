@@ -36,6 +36,23 @@ def test_theme_config_is_strictly_light():
     assert 'backgroundColor = "#ffffff"' in content
     assert 'textColor = "#0f172a"' in content
     assert 'primaryColor = "#2563eb"' in content
+    assert "maxUploadSize = 1024" in content
+
+
+def test_input_instructions_ui_glitch_hidden():
+    """Verify CSS hides 'Press Enter to apply' overlay that was clipping text input."""
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    content = app_path.read_text(encoding="utf-8")
+    assert '[data-testid="InputInstructions"]' in content
+    assert "display: none !important" in content
+
+
+def test_upload_capacity_limits_1gb_and_50k_files():
+    """Verify that upload limits are set to 1 GB and 50,000 files across config and extractor."""
+    from vibesec.extractor import MAX_ARCHIVE_BYTES, MAX_ARCHIVE_MEMBERS
+
+    assert MAX_ARCHIVE_BYTES == 1_073_741_824  # 1 GB
+    assert MAX_ARCHIVE_MEMBERS == 50_000  # 50,000 file contents
 
 
 def test_app_py_clean_code_and_zero_emojis():

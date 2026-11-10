@@ -46,6 +46,19 @@ def test_extract_zip_single_top_level_descends():
     assert (extracted / "app.py").is_file()
 
 
+def test_extract_zip_with_ds_store_metadata_still_descends():
+    td_dest = Path(tempfile.mkdtemp())
+    zip_p = _make_zip({
+        "project-main/app.py": "print('ok')",
+        "project-main/README.md": "# Readme",
+        ".DS_Store": "junk",
+        "__MACOSX/._app.py": "mac meta",
+    })
+    extracted = extract_zip(zip_p, td_dest)
+    assert extracted.name == "project-main"
+    assert (extracted / "app.py").is_file()
+
+
 def test_reject_path_traversal():
     td_dest = Path(tempfile.mkdtemp())
     zip_p = _make_zip({"../../evil.txt": "malicious content"})

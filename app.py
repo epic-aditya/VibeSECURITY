@@ -366,6 +366,25 @@ div[data-baseweb="select"] {
     background-color: #FFFFFF !important;
 }
 
+div[data-baseweb="input"] input {
+    color: #0F172A !important;
+    background-color: #FFFFFF !important;
+    font-size: 0.875rem !important;
+}
+
+/* Eliminate 'Press Enter to apply' overlay completely */
+[data-testid="InputInstructions"],
+div[class*="InputInstructions"],
+.stInputInstructions {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    width: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
 /* Hide Streamlit Community Cloud hosting chrome */
 [data-testid="stToolbar"],
 div[class*="_profileContainer_"],
@@ -406,7 +425,8 @@ with st.sidebar:
         zip_file = st.file_uploader(
             "Upload application archive (.zip)",
             type=["zip"],
-            help="Zip archive containing source code (max 200 MB compressed, 1 GB uncompressed)",
+            key="zip_uploader",
+            help="Zip archive containing source code (max 1 GB compressed, up to 50,000 files)",
         )
     elif input_mode == "Public GitHub Repository":
         github_url = st.text_input(
@@ -447,7 +467,13 @@ if run_scan_btn:
                 st.error("Please upload a ZIP archive containing project source code before scanning.")
                 st.stop()
             zip_path = tmpdir / Path(zip_file.name or "upload.zip").name
-            zip_path.write_bytes(zip_file.getbuffer())
+            zip_file.seek(0)
+            with open(zip_path, "wb") as f_out:
+                while True:
+                    chunk = zip_file.read(8 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    f_out.write(chunk)
             res = pipeline.run_pipeline(
                 zip_path=zip_path,
                 pdf_path=pdf_out,
@@ -574,7 +600,7 @@ with tabs[0]:
             st.markdown("#### Application Security Assessment")
             st.markdown(
                 "Select a target source in the sidebar to execute an automated security scan.\n\n"
-                "- **ZIP Archive:** Upload a compressed project archive (.zip) up to 200 MB.\n"
+                "- **ZIP Archive:** Upload a compressed project archive (.zip) up to 1 GB (up to 50,000 files).\n"
                 "- **Public GitHub Repository:** Enter a repository URL to perform an automated clone and inspection.\n\n"
                 "The analysis correlates static code analysis (SAST), software composition analysis (SCA), "
                 "hardcoded secrets detection, and attack surface reachability without executing target code."
