@@ -518,3 +518,4 @@ The repository includes a comprehensive test suite executed via `pytest`:
 ## 10. Summary
 
 VibeSec combines deterministic multi-scanner orchestration, static AST taint analysis, and dependency reachability into a production-grade application security platform. By eliminating comment false positives, calculating mathematically consistent risk postures, and enforcing an enterprise light theme, it delivers actionable, verifiable security intelligence for modern software.
+

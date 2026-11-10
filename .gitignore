@@ -39,6 +39,10 @@ Thumbs.db
 .idea/
 .vscode/
 .github/
+.devcontainer/
+
+# Tests & fixtures (excluded from production repository)
+tests/
 
 # Private instructions and prompt files
 instructions/
