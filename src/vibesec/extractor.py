@@ -31,8 +31,8 @@ MAX_FILE_BYTES = 1_000_000  # never read giant files into memory during profilin
 
 # Resource guards for uploaded archives (prevents ZIP bombs / disk exhaustion).
 MAX_ARCHIVE_MEMBERS = 10_000
-MAX_UNCOMPRESSED_BYTES = 250_000_000   # 250 MB
-MAX_ARCHIVE_BYTES = 50_000_000         # 50 MB
+MAX_UNCOMPRESSED_BYTES = 1_000_000_000  # 1 GB
+MAX_ARCHIVE_BYTES = 200_000_000         # 200 MB
 DANGEROUS_EXTENSIONS = {".exe", ".dll", ".so", ".dylib", ".bin", ".com", ".msi"}
 
 

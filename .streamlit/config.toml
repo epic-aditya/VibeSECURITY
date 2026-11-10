@@ -2,7 +2,7 @@
 headless = true
 enableCORS = false
 enableXsrfProtection = true
-maxUploadSize = 50
+maxUploadSize = 200
 
 [browser]
 gatherUsageStats = false

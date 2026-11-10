@@ -406,7 +406,7 @@ with st.sidebar:
         zip_file = st.file_uploader(
             "Upload application archive (.zip)",
             type=["zip"],
-            help="Zip archive containing source code (max 50 MB compressed, 250 MB uncompressed)",
+            help="Zip archive containing source code (max 200 MB compressed, 1 GB uncompressed)",
         )
     elif input_mode == "Public GitHub Repository":
         github_url = st.text_input(
@@ -574,7 +574,7 @@ with tabs[0]:
             st.markdown("#### Application Security Assessment")
             st.markdown(
                 "Select a target source in the sidebar to execute an automated security scan.\n\n"
-                "- **ZIP Archive:** Upload a compressed project archive (.zip) up to 50 MB.\n"
+                "- **ZIP Archive:** Upload a compressed project archive (.zip) up to 200 MB.\n"
                 "- **Public GitHub Repository:** Enter a repository URL to perform an automated clone and inspection.\n\n"
                 "The analysis correlates static code analysis (SAST), software composition analysis (SCA), "
                 "hardcoded secrets detection, and attack surface reachability without executing target code."
