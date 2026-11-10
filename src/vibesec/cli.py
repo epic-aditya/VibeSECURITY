@@ -40,8 +40,6 @@ def main(argv: list[str] | None = None) -> int:
     scan.add_argument("--markdown", type=Path, help="Write Markdown report to this path")
     scan.add_argument("--sbom", type=Path, help="Write CycloneDX JSON SBOM to this path")
     scan.add_argument("--fix-plan", action="store_true", help="Print ordered FixAction dependency upgrade plan")
-    scan.add_argument("--no-network", action="store_true", help="Disable network lookups (use offline cache/neutral weights)")
-    scan.add_argument("--offline", action="store_true", help="Disable network lookups (alias for --no-network)")
     scan.add_argument(
         "--min-reachability",
         choices=["CALLED", "IMPORTED", "TRANSITIVE_OF_RUNTIME", "TOOLCHAIN", "NOT_IMPORTED"],
@@ -58,13 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     asm = sub.add_parser("asm", help="Print the Application Security Model as JSON")
     asm.add_argument("--scan", type=int, help="Scan ID (defaults to latest stored scan)")
     asm.add_argument("--dir", type=Path, help="Scan a local directory instead of stored history")
-    asm.add_argument("--no-network", action="store_true", help="Disable network lookups")
 
     # --- paths ---
     paths = sub.add_parser("paths", help="Print ranked attack paths as JSON")
     paths.add_argument("--scan", type=int, help="Scan ID (defaults to latest stored scan)")
     paths.add_argument("--dir", type=Path, help="Scan a local directory instead of stored history")
-    paths.add_argument("--no-network", action="store_true", help="Disable network lookups")
 
     # --- bench ---
     sub.add_parser("bench", help="Run evaluation benchmark")
@@ -140,15 +136,10 @@ def _handle_demo(args) -> int:
 def _handle_scan(args) -> int:
     if getattr(args, "path", None) and not args.dir:
         args.dir = args.path
-    if getattr(args, "offline", False):
-        args.no_network = True
 
     if not args.zip and not args.github and not args.dir:
         print("error: one of --zip, --dir, or --github is required", file=sys.stderr)
         return 1
-
-    if args.no_network:
-        os.environ["VIBESEC_OFFLINE"] = "1"
 
     if args.output:
         out_dir = Path(args.output)
@@ -173,7 +164,6 @@ def _handle_scan(args) -> int:
             dir_path=args.dir,
             explain=args.explain,
             pdf_path=args.pdf,
-            no_network=args.no_network,
             min_reachability=args.min_reachability,
         )
     except Exception as exc:
@@ -184,7 +174,7 @@ def _handle_scan(args) -> int:
     print(
         f"Profile: {len(result.profile.get('languages', {}))} languages, "
         f"{len(result.profile.get('frameworks', []))} frameworks, "
-        f"{result.profile.get('file_count', 0)} files (Mode: {'Offline' if result.offline else 'Online'})"
+        f"{result.profile.get('file_count', 0)} files"
     )
     posture_stmt = getattr(result, "risk_posture", "")
     if not posture_stmt and result.asm and getattr(result.asm, "posture", None):
@@ -293,10 +283,8 @@ def _handle_scan(args) -> int:
 def _handle_asm(args, paths_only: bool) -> int:
     asm_data: dict = {}
     if args.dir:
-        if args.no_network:
-            os.environ["VIBESEC_OFFLINE"] = "1"
         try:
-            result = pipeline.run_pipeline(dir_path=args.dir, no_network=args.no_network)
+            result = pipeline.run_pipeline(dir_path=args.dir)
         except Exception as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1

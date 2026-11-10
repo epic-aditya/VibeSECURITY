@@ -154,11 +154,6 @@ Scan a remote GitHub repository:
 vibesec scan --github https://github.com/org/repo
 ```
 
-Offline scan (isolated mode; uses deterministic local heuristics without network requests):
-```bash
-vibesec scan --dir /path/to/project --offline
-```
-
 Fail CI/CD pipeline if any critical or high finding is detected:
 ```bash
 vibesec scan --dir . --fail-on high
@@ -217,17 +212,16 @@ VibeSec is fully hardened for cloud and containerized deployment:
 | Variable | Default | Purpose |
 |---|---|---|
 | `VIBESEC_ALLOW_LOCAL_PATH` | `0` | Enable local filesystem path scanning in the web UI (useful for self-hosted instances). |
-| `VIBESEC_DB_PATH` | `~/.vibesec/vibesec.db` | Custom filesystem path for SQLite scan history storage. |
-| `VIBESEC_OFFLINE` | `0` | Force offline mode, disabling external network queries and using neutral EPSS/KEV signals. |
+| `VIBESEC_DB_PATH` | `~/.vibesec/vibesec.db` | Custom filesystem path for SQLite scan record storage. |
 
 ### 4. Interactive Tabs
 
-The portal includes 4 dedicated analysis tabs:
+The portal is designed with an exclusive, enterprise-grade light theme featuring 4 focused production sections:
 
-1. **Scan & Execution**: Upload ZIP archives or specify GitHub URLs; trigger scans with real-time stage progress bars and view executive metrics.
+1. **Scan**: Configure target sources (ZIP upload or GitHub repo URL), trigger scans with real-time execution progress, and inspect the findings ledger with actionable cards, code evidence, and remediation advice.
 2. **Attack Surface & Paths**: Review discovered entrypoints, authentication states, parameter validations, application map graph visualizer, and ranked attack paths with step-by-step traces.
-3. **Dependencies & SCA Intelligence**: Inspect lockfile packages, license compliance summaries, and prioritized dependency upgrade plans ordered by runtime exposure and reachability.
-4. **Reports & Exports**: Generate and download verifiable PDF assessment reports, Developer Markdown files, GitHub-compatible SARIF files, and CycloneDX 1.5 JSON SBOMs.
+3. **Dependencies**: Inspect lockfile packages, license compliance summaries, and prioritized dependency upgrade plans ordered by runtime exposure and reachability.
+4. **Reports**: Generate and download audit-ready PDF executive reports, Developer Markdown files, GitHub-compatible SARIF files, and CycloneDX 1.5 JSON SBOMs.
 
 ---
 
