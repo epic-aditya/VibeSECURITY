@@ -56,7 +56,7 @@ def export_json(
     meta = dict(metadata or {})
     if offline is not None:
         meta["offline"] = offline
-    asm_dict = asm.to_dict() if hasattr(asm, "to_dict") else (asm or {})
+    asm_dict = asm.to_dict() if asm is not None and hasattr(asm, "to_dict") else (asm or {})
     data = {
         "schema_version": "v3",
         "vibesec_version": "3.0.0",
@@ -110,13 +110,14 @@ def export_markdown(
     metadata: dict[str, Any] | None = None,
     asm: dict[str, Any] | None = None,
     offline: bool | None = None,
+    suppressed_findings: list[Finding] | None = None,
 ) -> Path:
-    """Export comprehensive Markdown report with ASM and attack paths."""
+    """Export comprehensive Markdown report with ASM, attack paths, and audit ledger."""
     meta = dict(metadata or {})
     if offline is not None:
         meta["offline"] = offline
 
-    asm_dict = asm.to_dict() if hasattr(asm, "to_dict") else (asm or {})
+    asm_dict = asm.to_dict() if asm is not None and hasattr(asm, "to_dict") else (asm or {})
     posture_data = asm_dict.get("posture", {}) or {}
     paths = asm_dict.get("attack_paths", []) or []
     entry_points = asm_dict.get("entry_points", []) or []
@@ -137,12 +138,13 @@ def export_markdown(
     info_cnt = sum(1 for f in findings if f.risk_bucket == Severity.INFO)
     max_score = max((f.risk_score for f in findings), default=0.0)
 
+    supp_cnt = len(suppressed_findings) if suppressed_findings is not None else posture_data.get('suppressed_findings', 0)
     lines.append(
         f"- **Total findings:** {len(findings)} "
         f"| **Actionable findings:** {p_details.get('actionable_findings', len(findings))} "
         f"| **Deprioritized:** {p_details.get('deprioritized_findings', 0)} "
         f"({p_details.get('deprioritized_dependency_cves', 0)} dependency CVE(s), {p_details.get('deprioritized_test_toolchain', 0)} test/toolchain finding(s)) "
-        f"| **Suppressed with reason:** {posture_data.get('suppressed_findings', 0)}"
+        f"| **Findings Removed by Filters / Suppressed:** {supp_cnt}"
     )
     lines.append(
         f"- **Severity Breakdown:** Critical: {crit_cnt} | High: {high_cnt} | Medium: {med_cnt} | Low: {low_cnt} | Info: {info_cnt} | Highest Risk Score: {max_score:.1f}"
@@ -416,17 +418,37 @@ def export_markdown(
     lines.append(f"- **NPM Advisory Database Date:** `{meta.get('npm_advisory_date', '2026-10-29')}`")
     lines.append(f"- **Execution Mode:** {'Offline (neutral signals; EPSS not measured)' if meta.get('offline') else 'Online (EPSS + CISA KEV when available)'}\n")
 
+    # 10. Audit Ledger: Findings Removed by Filters
+    if suppressed_findings:
+        lines.append("## 10. Audit Ledger: Findings Removed by Filters\n")
+        lines.append(f"**Total Findings Filtered / Suppressed:** {len(suppressed_findings)}\n")
+        lines.append("| File | Line | Rule ID | Category | Suppression Reason |")
+        lines.append("|---|---|---|---|---|")
+        for sf in suppressed_findings[:50]:
+            loc_f = sf.location.file if sf.location else "unknown"
+            loc_l = sf.location.start_line if sf.location else 1
+            reason = sf.suppression_reason or "Non-executable or placeholder"
+            lines.append(f"| `{loc_f}` | `{loc_l}` | `{sf.rule_id}` | `{sf.category}` | {reason} |")
+        lines.append("")
+
     # 11. Appendix: Scoring Formulas
     lines.append("## 11. Appendix: Transparent Scoring Formulas\n")
-    lines.append("**Code Findings:** `Score = 4·Severity + 2·Confidence + 1.5·Taint + Auth + Sensitive`\n")
-    lines.append("**Dependency Findings (Scoring v2.1):** `Score = (4·S + 2·X + 1.5·R + K) · D`\n")
-    lines.append("- $S$: Severity Rank (CRITICAL 4 ... INFO 0)")
-    lines.append("- $X$: EPSS Exploit Probability (0.0-1.0; 0.3 placeholder when unknown, labeled not measured)")
-    lines.append("- $R$: Reachability (CALLED 1.0, IMPORTED 0.7, TRANSITIVE_OF_RUNTIME 0.4, UNKNOWN 0.4, TOOLCHAIN 0.1, NOT_IMPORTED 0.0)")
-    lines.append("- $K$: CISA KEV Bonus (2.0 if in KEV catalog, else 0.0)")
-    lines.append("- $D$: Exposure multiplier (RUNTIME_SERVER 1.0, RUNTIME_BUNDLE 1.0, UNKNOWN 0.7, TOOLCHAIN_BUILD 0.35, TOOLCHAIN_DEVSERVER 0.25, TEST 0.2)")
-    lines.append("**Attack Path Score:** `10 × Impact × Exposure × Confidence`\n")
+    lines.append("**Code Findings (0–10 Scale):** `Score = min(10.0, base · Conf · T · A · D · S_asset)`\n")
+    lines.append("- $base$: CVSS base score (0.0-10.0) if present, else mapped from raw severity (CRITICAL 9.5, HIGH 7.5, MEDIUM 5.0, LOW 2.0, INFO 0.0)")
+    lines.append("- $Conf$: Confidence factor = $0.6 + 0.4 \\times confidence$ (range 0.6–1.0)")
+    lines.append("- $T$: Taint factor (1.0 for reachable flow or non-sink rules; 0.75 for unconfirmed code sinks)")
+    lines.append("- $A$: Authentication context factor (1.0 public/unauth, 0.9 unknown, 0.75 authenticated)")
+    lines.append("- $D$: Exposure multiplier (RUNTIME 1.0, UNKNOWN 0.7, TOOLCHAIN_BUILD 0.35, TOOLCHAIN_DEVSERVER 0.25, TEST 0.2)")
+    lines.append("- $S_{asset}$: Sensitive asset multiplier (1.15 if credentials/tokens/PII, else 1.0)\n")
+    lines.append("**Dependency Findings (0–10 Scale):** `Score = min(10.0, base · R · D · (1 + 0.3·EPSS) + KEV_bonus)`\n")
+    lines.append("- $base$: CVSS base score or severity map")
+    lines.append("- $R$: Reachability factor (CALLED 1.0, IMPORTED 0.75, UNKNOWN 0.5, TRANSITIVE 0.4, TOOLCHAIN 0.25, NOT_IMPORTED 0.15 [demoted, never hidden])")
+    lines.append("- $D$: Exposure multiplier (RUNTIME 1.0, UNKNOWN 0.7, TOOLCHAIN_BUILD 0.35, TEST 0.2)")
+    lines.append("- $EPSS$: Exploit probability (0.0-1.0; term dropped [multiplier 1.0] when unmeasured or offline)")
+    lines.append("- $KEV_{bonus}$: CISA KEV exploit bonus ($3.0 \\times D$ if actively exploited; CALLED in RUNTIME is guaranteed $\\ge 7.0$)\n")
+    lines.append("**Attack Path Score (0–10 Scale):** `PathScore = 10 · Impact · Exposure · Confidence`\n")
     lines.append("- Impact: command/code execution 1.0, SQL 0.9, SSRF/path traversal 0.7, XSS 0.5; Exposure: public 1.0, unknown 0.8, authenticated 0.5\n")
+    lines.append("**Severity Buckets:** CRITICAL $\\ge 9.0$ · HIGH $\\ge 7.0$ · MEDIUM $\\ge 4.0$ · LOW $> 0.0$ · INFO $== 0.0$\n")
 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)

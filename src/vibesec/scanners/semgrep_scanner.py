@@ -85,7 +85,7 @@ def run_semgrep(
     cmd.append(str(target))
 
     try:
-        data = run_json(cmd, timeout=600)
+        data = run_json(cmd, timeout=90)
         state = "DEGRADED" if (default_rules and is_off) else "OK"
         reason = "registry rules unreachable offline; custom rules ran" if (default_rules and is_off) else ""
         if isinstance(data, dict):
@@ -99,7 +99,7 @@ def run_semgrep(
         if "p/security-audit" in configs and VIBE_RULES_DIR.is_dir():
             fallback_cmd = list(base_cmd) + ["--config", str(VIBE_RULES_DIR), str(target)]
             try:
-                data = run_json(fallback_cmd, timeout=300)
+                data = run_json(fallback_cmd, timeout=60)
                 if isinstance(data, dict):
                     data["_state"] = "DEGRADED"
                     data["_reason"] = "registry rules unreachable; custom rules ran"

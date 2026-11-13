@@ -37,7 +37,14 @@ packages = ["src/vibesec"]
 line-length = 100
 target-version = "py311"
 src = ["src"]
+exclude = ["evaluation/corpus", "examples"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+ignore = ["E501", "SIM102", "SIM117", "SIM105"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_configs = true
+check_untyped_defs = true

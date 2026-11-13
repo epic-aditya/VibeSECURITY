@@ -72,7 +72,9 @@ class Location:
         """True when two locations in the same file touch or nearly touch."""
         if self.file.replace("\\", "/").lower() != other.file.replace("\\", "/").lower():
             return False
-        return not (self.end_line + slack < other.start_line or other.end_line + slack < self.start_line)
+        end_a = self.end_line if self.end_line is not None else self.start_line
+        end_b = other.end_line if other.end_line is not None else other.start_line
+        return not (end_a + slack < other.start_line or end_b + slack < self.start_line)
 
 
 @dataclass
@@ -100,7 +102,7 @@ class Finding:
     package_version: str | None = None
     ecosystem: str | None = None  # npm, pypi
     aliases: list[str] = field(default_factory=list)  # CVE-..., GHSA-...
-    affected_instances: list[dict] = field(default_factory=list)
+    affected_instances: list[Any] = field(default_factory=list)
 
     # Reachability & exposure (v3)
     reachability: str | None = None  # CALLED | IMPORTED | TRANSITIVE_OF_RUNTIME | TOOLCHAIN | NOT_IMPORTED | UNKNOWN
@@ -109,6 +111,7 @@ class Finding:
     exposure_chain: list[str] = field(default_factory=list)
     scope: str | None = None  # prod | dev | optional
     epss_score: float | None = None  # 0.0 - 1.0
+    cvss_score: float | None = None  # 0.0 - 10.0
     in_cisa_kev: bool = False
     fix_action_id: str | None = None
 
@@ -141,10 +144,12 @@ class Finding:
     def from_dict(cls, d: dict) -> Finding:
         loc = d.get("location") or {}
         if isinstance(loc, dict):
+            start_val = int(loc.get("start_line") or 1)
+            end_val = int(loc.get("end_line") or start_val)
             location = Location(
-                file=loc.get("file", ""),
-                start_line=int(loc.get("start_line", 1)),
-                end_line=int(loc.get("end_line", loc.get("start_line", 1))),
+                file=str(loc.get("file") or ""),
+                start_line=start_val,
+                end_line=end_val,
             )
         elif isinstance(loc, Location):
             location = loc
@@ -181,6 +186,7 @@ class Finding:
             exposure_chain=list(d.get("exposure_chain") or []),
             scope=d.get("scope"),
             epss_score=float(d["epss_score"]) if d.get("epss_score") is not None else None,
+            cvss_score=float(d["cvss_score"]) if d.get("cvss_score") is not None else None,
             in_cisa_kev=bool(d.get("in_cisa_kev", False)),
             fix_action_id=d.get("fix_action_id"),
             taint_reachable=bool(d.get("taint_reachable", False)),

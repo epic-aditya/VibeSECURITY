@@ -7,11 +7,13 @@ with VEX-compliant reachability analysis (code_not_reachable for NOT_IMPORTED).
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from .dep_graph import DependencyGraph, build_project_dependency_graph
 from .models import Finding
@@ -28,14 +30,21 @@ def _parse_requirements_txt(content: str, dep_graph: DependencyGraph | None = No
             name, version = match.group(1).lower().strip(), match.group(2) or "unknown"
             scope = dep_graph.get_scope(name) if dep_graph else "prod"
             cdx_scope = "required" if scope == "prod" else ("optional" if scope == "optional" else "excluded")
-            components.append({
+            comp: dict = {
                 "type": "library",
                 "name": name,
                 "version": version,
                 "scope": cdx_scope,
                 "purl": f"pkg:pypi/{name}@{version}" if version != "unknown" else f"pkg:pypi/{name}",
                 "bom-ref": f"pkg:pypi/{name}@{version}",
-            })
+            }
+            # Extract lockfile integrity hash if present in --hash flag
+            match_hash = re.search(r"--hash=(sha256|sha384|sha512):([a-fA-F0-9]+)", line)
+            if match_hash:
+                alg_name = match_hash.group(1).upper()
+                alg_map = {"SHA256": "SHA-256", "SHA384": "SHA-384", "SHA512": "SHA-512"}
+                comp["hashes"] = [{"alg": alg_map[alg_name], "content": match_hash.group(2).lower()}]
+            components.append(comp)
     return components
 
 
@@ -60,6 +69,27 @@ def _parse_package_lock_json(content: str, dep_graph: DependencyGraph | None = N
                     "purl": f"pkg:npm/{name}@{version}",
                     "bom-ref": f"pkg:npm/{name}@{version}",
                 }
+                integrity = info.get("integrity")
+                if integrity and isinstance(integrity, str) and "-" in integrity:
+                    alg_raw, b64_hash = integrity.split("-", 1)
+                    alg_map = {
+                        "sha512": "SHA-512",
+                        "sha384": "SHA-384",
+                        "sha256": "SHA-256",
+                        "sha1": "SHA-1",
+                    }
+                    if alg_raw.lower() in alg_map:
+                        try:
+                            b64_clean = b64_hash.split("?")[0].strip()
+                            raw_bytes = base64.b64decode(b64_clean)
+                            comp["hashes"] = [
+                                {
+                                    "alg": alg_map[alg_raw.lower()],
+                                    "content": raw_bytes.hex(),
+                                }
+                            ]
+                        except Exception:
+                            pass
                 lic = info.get("license")
                 if lic:
                     comp["licenses"] = [{"license": {"name": str(lic)}}]
@@ -79,6 +109,27 @@ def _parse_package_lock_json(content: str, dep_graph: DependencyGraph | None = N
                     "purl": f"pkg:npm/{name}@{version}",
                     "bom-ref": f"pkg:npm/{name}@{version}",
                 }
+                integrity = info.get("integrity")
+                if integrity and isinstance(integrity, str) and "-" in integrity:
+                    alg_raw, b64_hash = integrity.split("-", 1)
+                    alg_map = {
+                        "sha512": "SHA-512",
+                        "sha384": "SHA-384",
+                        "sha256": "SHA-256",
+                        "sha1": "SHA-1",
+                    }
+                    if alg_raw.lower() in alg_map:
+                        try:
+                            b64_clean = b64_hash.split("?")[0].strip()
+                            raw_bytes = base64.b64decode(b64_clean)
+                            comp["hashes"] = [
+                                {
+                                    "alg": alg_map[alg_raw.lower()],
+                                    "content": raw_bytes.hex(),
+                                }
+                            ]
+                        except Exception:
+                            pass
                 lic = info.get("license")
                 if lic:
                     comp["licenses"] = [{"license": {"name": str(lic)}}]
@@ -167,6 +218,7 @@ def generate_sbom(
             pass
 
     # Build CycloneDX v1.5 JSON structure
+    root_ref = f"pkg:generic/{project_name}@1.0.0"
     sbom: dict = {
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
@@ -183,6 +235,7 @@ def generate_sbom(
             ],
             "component": {
                 "type": "application",
+                "bom-ref": root_ref,
                 "name": project_name,
                 "version": "1.0.0",
             },
@@ -203,13 +256,10 @@ def generate_sbom(
             eco = f.ecosystem or "npm"
             reach = f.reachability or "UNKNOWN"
             exp_cls = f.exposure_class or "UNKNOWN"
-            if exp_cls in ("TOOLCHAIN_BUILD", "TOOLCHAIN_DEVSERVER", "TEST") or reach in ("TOOLCHAIN", "BUILD_TOOL"):
-                state = "not_affected"
-                justification = "code_not_reachable"
-            elif reach == "NOT_IMPORTED":
-                state = "not_affected"
-                justification = "code_not_reachable"
-            elif reach == "CALLED":
+
+            # Phase 8: NOT_IMPORTED is never not_affected (cannot prove non-exploitability statically).
+            # Mark CALLED as exploitable; everything else as in_triage with reachability taxonomy properties.
+            if reach == "CALLED":
                 state = "exploitable"
                 justification = None
             else:
@@ -243,6 +293,12 @@ def generate_sbom(
                 bom_refs.add(exact_ref)
                 comp_by_name[pkg_norm] = exact_ref
 
+            vuln_props = [
+                {"name": "vibesec:reachability", "value": str(reach)},
+                {"name": "vibesec:exposure_class", "value": str(exp_cls)},
+                {"name": "vibesec:scope", "value": str(f.scope or "prod")},
+            ]
+
             vuln_item = {
                 "bom-ref": f"vuln-{vuln_id}",
                 "id": vuln_id,
@@ -260,12 +316,43 @@ def generate_sbom(
                     }
                 ],
                 "analysis": analysis,
+                "properties": vuln_props,
             }
             vuln_list.append(vuln_item)
 
         if vuln_list:
             sbom["vulnerabilities"] = vuln_list
 
+    # Build CycloneDX dependencies graph linking root application to direct and transitive deps
+    comp_by_name = {c["name"]: c["bom-ref"] for c in components}
+    dep_entries: list[dict] = []
+    root_deps: list[str] = []
+
+    for c in components:
+        comp_ref = c["bom-ref"]
+        comp_name = c["name"]
+        dep_node = dep_graph.get_node(comp_name) if dep_graph else None
+        if (dep_node and dep_node.direct) or (not dep_node and c.get("scope") == "required"):
+            root_deps.append(comp_ref)
+
+        comp_deps: list[str] = []
+        if dep_node and dep_node.dependencies:
+            for child_name in dep_node.dependencies:
+                cn = child_name.lower().strip()
+                if cn in comp_by_name and comp_by_name[cn] != comp_ref:
+                    comp_deps.append(comp_by_name[cn])
+
+        entry: dict[str, Any] = {"ref": comp_ref}
+        if comp_deps:
+            entry["dependsOn"] = sorted(list(set(comp_deps)))
+        dep_entries.append(entry)
+
+    # Insert root application node
+    dep_entries.insert(0, {
+        "ref": root_ref,
+        "dependsOn": sorted(list(set(root_deps))),
+    })
+    sbom["dependencies"] = dep_entries
 
     return sbom
 

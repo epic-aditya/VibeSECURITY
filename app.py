@@ -926,7 +926,7 @@ with tabs[3]:
             with rep_col1:
                 with st.container(border=True):
                     st.markdown("**PDF Executive Report**")
-                    st.caption("Audit-ready executive summary with risk posture, compliance breakdown, and findings.")
+                    st.caption("Executive summary with risk posture, compliance breakdown, and findings.")
                     if pdf_bytes:
                         st.download_button(
                             "Download PDF",

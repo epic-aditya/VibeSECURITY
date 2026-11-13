@@ -10,9 +10,9 @@ pip-audit, npm audit, and Bandit.
 from __future__ import annotations
 
 import ast
-import io
 import re
 from pathlib import Path
+from typing import Any
 
 from .models import Finding, Location, Severity, SourceTool
 
@@ -142,7 +142,7 @@ def _rel(path: str, root: Path) -> str:
     return p_str.lstrip("./")
 
 
-_PARSED_AST_CACHE: dict[str, tuple[set[int], dict[int, list[tuple[list[str], ast.AST]]]]] = {}
+_PARSED_AST_CACHE: dict[str, tuple[set[int], dict[int, list[tuple[list[str], ast.AST]]], list[str]]] = {}
 
 
 def _resolve_source_path(root: Path, rel_file: str) -> Path | None:
@@ -163,6 +163,126 @@ def _resolve_source_path(root: Path, rel_file: str) -> Path | None:
     return None
 
 
+_FILTERED_FINDINGS_LEDGER: list[dict[str, Any]] = []
+
+
+def get_filtered_findings_ledger() -> list[dict[str, Any]]:
+    """Return an immutable copy of findings removed by normalizer filters."""
+    return list(_FILTERED_FINDINGS_LEDGER)
+
+
+def clear_filtered_findings_ledger() -> None:
+    """Reset the normalizer filtered findings ledger."""
+    _FILTERED_FINDINGS_LEDGER.clear()
+
+
+def _record_filtered_finding(
+    rule_id: str,
+    rel_file: str,
+    line: int,
+    category: str,
+    reason: str,
+    evidence: str = "",
+) -> None:
+    """Record an audit entry for a finding removed by normalizer filters."""
+    _FILTERED_FINDINGS_LEDGER.append({
+        "rule_id": rule_id,
+        "file": rel_file,
+        "line": line,
+        "category": category,
+        "reason": reason,
+        "evidence": evidence[:120].strip(),
+    })
+
+
+def is_javascript_comment_line(line: str, in_multiline: bool) -> tuple[bool, bool]:
+    """Parse a single line of JS/TS to determine if it contains only comments or whitespace.
+
+    String-aware: distinguishes '//' inside strings/URLs (e.g., 'postgres://user:pass@host')
+    from real comments. Handles quotes, template literals, and escape characters.
+    Returns: (is_comment_only, in_multiline_at_end)
+    """
+    i = 0
+    n = len(line)
+    has_code = False
+    in_single = False
+    in_double = False
+    in_template = False
+
+    while i < n:
+        ch = line[i]
+        nxt = line[i + 1] if i + 1 < n else ""
+
+        if in_multiline:
+            if ch == "*" and nxt == "/":
+                in_multiline = False
+                i += 2
+                continue
+            i += 1
+            continue
+
+        if in_single:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == "'":
+                in_single = False
+            has_code = True
+            i += 1
+            continue
+
+        if in_double:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == '"':
+                in_double = False
+            has_code = True
+            i += 1
+            continue
+
+        if in_template:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == "`":
+                in_template = False
+            has_code = True
+            i += 1
+            continue
+
+        # Outside strings and block comments
+        if ch == "/" and nxt == "/":
+            break
+        elif ch == "/" and nxt == "*":
+            in_multiline = True
+            i += 2
+            continue
+        elif ch == "'":
+            in_single = True
+            has_code = True
+            i += 1
+            continue
+        elif ch == '"':
+            in_double = True
+            has_code = True
+            i += 1
+            continue
+        elif ch == "`":
+            in_template = True
+            has_code = True
+            i += 1
+            continue
+        elif not ch.isspace():
+            has_code = True
+            i += 1
+            continue
+
+        i += 1
+
+    return not has_code, in_multiline
+
+
 def is_comment_or_docstring_only(
     root: Path,
     rel_file: str,
@@ -175,6 +295,11 @@ def is_comment_or_docstring_only(
     """Determine if a finding's location in source code is purely non-executable comment/docstring,
     or if a secret/credential rule matched non-credential code (such as a username assignment
     or an environment-variable lookup).
+
+    CRITICAL SECURITY INVARIANT:
+    Secret findings (category='secret' or credential rules) are NEVER dropped because they
+    appear inside comments or docstrings. A leaked secret in a comment is still leaked.
+    Comment/docstring suppression applies strictly to code-sink rules (sqli, command injection, etc.).
     """
     if not rel_file:
         return False
@@ -184,6 +309,16 @@ def is_comment_or_docstring_only(
 
     end_line = end or start
     suffix = path.suffix.lower()
+
+    is_secret_rule = (
+        category == "secret"
+        or rule_id.startswith("gitleaks.")
+        or rule_id.startswith("trivy.secret.")
+        or "credential" in rule_id.lower()
+        or "secret" in rule_id.lower()
+        or "password" in rule_id.lower()
+        or "key" in rule_id.lower()
+    )
 
     # Python syntax & AST-aware validation
     if suffix == ".py":
@@ -197,7 +332,6 @@ def is_comment_or_docstring_only(
 
                 for node in ast.walk(tree):
                     if isinstance(node, ast.stmt):
-                        # Treat bare string expressions (docstrings) as non-executable
                         if (
                             isinstance(node, ast.Expr)
                             and isinstance(node.value, ast.Constant)
@@ -213,27 +347,36 @@ def is_comment_or_docstring_only(
                             names = [t.id for t in node.targets if isinstance(t, ast.Name)]
                             assignments.setdefault(node.lineno, []).append((names, node.value))
                         elif isinstance(node, ast.AnnAssign):
-                            if isinstance(node.target, ast.Name):
+                            if isinstance(node.target, ast.Name) and node.value is not None:
                                 assignments.setdefault(node.lineno, []).append(([node.target.id], node.value))
-                _PARSED_AST_CACHE[cache_key] = (exec_lines, assignments)
+                _PARSED_AST_CACHE[cache_key] = (exec_lines, assignments, content.splitlines())
             except Exception:
-                _PARSED_AST_CACHE[cache_key] = (set(), {})
+                _PARSED_AST_CACHE[cache_key] = (set(), {}, [])
 
-        exec_lines, assignments = _PARSED_AST_CACHE[cache_key]
+        exec_lines, assignments, lines_list = _PARSED_AST_CACHE[cache_key]
         target_lines = set(range(start, end_line + 1))
 
-        # If none of the matched lines contain executable statements, it is purely a comment/docstring
+        # If target lines contain no executable statements (comments or docstrings)
         if target_lines.isdisjoint(exec_lines):
+            if is_secret_rule:
+                # Check if the comment/docstring lines actually contain a real credential pattern
+                # If it's just prose comments (e.g. '# hardcoded credentials', '# TODO: add secret here'):
+                # then it is benign comment prose and should be suppressed!
+                # BUT if it contains a real credential (AKIA..., ghp_..., eyJ..., or key = '...'):
+                # then it must NEVER be suppressed!
+                comment_text = "\n".join(lines_list[ln - 1] for ln in target_lines if 1 <= ln <= len(lines_list))
+                if any(pat.search(comment_text) for pat in _KNOWN_GENUINE_SECRET_PATTERNS):
+                    return False  # Real leaked credential in comment -> DO NOT SUPPRESS!
+                return not bool(
+                    re.search(
+                        r"""(?:key|secret|token|password|auth)\s*[:=]\s*["'][^"'\s]{8,}["']""",
+                        comment_text,
+                        re.IGNORECASE,
+                    )
+                )
             return True
 
-        # Check if a secret/credential finding matched non-credential assignments or env lookups
-        is_secret_rule = (
-            category == "secret"
-            or "credential" in rule_id.lower()
-            or "secret" in rule_id.lower()
-            or "password" in rule_id.lower()
-            or "key" in rule_id.lower()
-        )
+        # Secret rules with executable code: check if matching benign non-credential variable or environment lookup
         if is_secret_rule:
             non_sensitive_names = {
                 "username", "user", "user_name", "login", "host", "hostname",
@@ -246,25 +389,38 @@ def is_comment_or_docstring_only(
                 line_assigns = assignments.get(ln, [])
                 for names, val_node in line_assigns:
                     found_any_assignment = True
-                    # Check if variable name is benign/non-sensitive
                     if names and all(n.lower() in non_sensitive_names for n in names):
                         continue
-                    # Check if value is an environment variable / config lookup
                     if isinstance(val_node, ast.Call):
                         call_func = getattr(val_node.func, "attr", "") or getattr(val_node.func, "id", "")
                         if call_func in ("getenv", "get", "environ", "Secret", "fetch", "get_secret"):
-                            continue
+                            # Evaluate fallback literal: os.getenv("KEY", "default-value")
+                            has_secret_fallback = False
+                            if len(val_node.args) >= 2:
+                                default_node = val_node.args[1]
+                                if isinstance(default_node, ast.Constant) and isinstance(default_node.value, str):
+                                    fb_val = default_node.value.strip()
+                                    if fb_val and not _is_placeholder_secret(rel_file, fb_val):
+                                        benign_literals = {
+                                            "development", "dev", "test", "testing", "localhost", "127.0.0.1",
+                                            "production", "prod", "none", "true", "false", "default",
+                                            "utf-8", "0", "1", "8000", "3000", "5432", "27017", "info", "debug",
+                                        }
+                                        if fb_val.lower() not in benign_literals and len(fb_val) >= 6:
+                                            has_secret_fallback = True
+                            if not has_secret_fallback:
+                                continue
+                            all_safe = False
+                            break
                     if isinstance(val_node, ast.Subscript):
                         sub_id = getattr(val_node.value, "id", "") or getattr(val_node.value, "attr", "")
                         if sub_id in ("environ", "env"):
                             continue
-                    # Genuine literal secret assignment
                     all_safe = False
                     break
-            if found_any_assignment and all_safe:
-                return True
+            return bool(found_any_assignment and all_safe)
 
-    # JavaScript / TypeScript comment validation
+    # JavaScript / TypeScript validation
     elif suffix in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -272,27 +428,64 @@ def is_comment_or_docstring_only(
             lines = []
 
         if lines:
+            line_slice = lines[max(0, start - 1) : end_line]
+            line_text = "\n".join(line_slice)
+
+            # Check secret rules in JS/TS
+            if is_secret_rule:
+                # If target lines are comments, check if they contain real credentials
+                all_comment = True
+                in_b = False
+                for lno in range(1, len(lines) + 1):
+                    raw_line = lines[lno - 1]
+                    is_c, in_b = is_javascript_comment_line(raw_line, in_b)
+                    if lno in range(start, end_line + 1):
+                        if not is_c:
+                            all_comment = False
+                            break
+                if all_comment:
+                    if any(pat.search(line_text) for pat in _KNOWN_GENUINE_SECRET_PATTERNS):
+                        return False  # Real leaked credential in JS comment -> DO NOT SUPPRESS
+                    return not bool(
+                        re.search(
+                            r"""(?:key|secret|token|password|auth)\s*[:=]\s*["'][^"'\s]{8,}["']""",
+                            line_text,
+                            re.IGNORECASE,
+                        )
+                    )
+
+                if "process.env" in line_text or "import.meta.env" in line_text:
+                    fb_match = re.search(
+                        r"""(?:process\.env|import\.meta\.env)\.[A-Za-z0-9_]+\s*(?:\|\||\?\?)\s*["']([^"']+)["']""",
+                        line_text,
+                    )
+                    if fb_match:
+                        fb_val = fb_match.group(1).strip()
+                        if fb_val and not _is_placeholder_secret(rel_file, fb_val):
+                            benign_literals = {"development", "dev", "test", "localhost", "127.0.0.1", "prod", "production", "default"}
+                            return not (fb_val.lower() not in benign_literals and len(fb_val) >= 6)
+                        return True
+                    elif not any(k in line_text for k in ("AKIA", "ghp_", "eyJ", "postgres://", "mongodb://", "redis://")):
+                        return True
+                return False
+
+            # Non-secret code rules: run string-aware comment parser
             all_comment = True
             in_block = False
             for lno in range(1, len(lines) + 1):
-                s = lines[lno - 1].strip()
-                if "/*" in s and "*/" not in s:
-                    in_block = True
-                if in_block:
-                    if "*/" in s:
-                        in_block = False
-                    continue
+                raw_line = lines[lno - 1]
+                is_comment, in_block = is_javascript_comment_line(raw_line, in_block)
                 if lno in range(start, end_line + 1):
-                    if s and not s.startswith(("//", "/*", "*", "*/")):
+                    if not is_comment:
                         all_comment = False
                         break
             if all_comment:
                 return True
 
-    # Fallback check on evidence string
-    if evidence:
-        ev_lines = [l.strip() for l in evidence.strip().splitlines() if l.strip()]
-        if ev_lines and all(l.startswith(("#", "//", "/*", "*", "*/", '"""', "'''")) for l in ev_lines):
+    # Fallback check on evidence string for non-secret rules only
+    if not is_secret_rule and evidence:
+        ev_lines = [ln.strip() for ln in evidence.strip().splitlines() if ln.strip()]
+        if ev_lines and all(ln.startswith(("#", "//", "/*", "*", "*/", '"""', "'''")) for ln in ev_lines):
             return True
 
     return False
@@ -368,6 +561,21 @@ def _cwe_from_metadata(metadata: dict, fallback: str = "CWE-0") -> str:
     return fallback
 
 
+_KNOWN_GENUINE_SECRET_PATTERNS = [
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"ghp_[0-9a-zA-Z]{36}"),
+    re.compile(r"github_pat_[0-9a-zA-Z_]{82}"),
+    re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    re.compile(r"(?:postgres|mysql|mongodb(?:\+srv)?|redis)://[^:\s]+:[^@\s]+@[^\s]+"),
+]
+
+_EXPLICIT_PLACEHOLDER_WORDS = {
+    "changeme", "change_me", "your_api_key_here", "your-api-key-here",
+    "your_key_here", "your-key-here", "your_secret_here", "your-secret-here",
+    "insert_key_here", "placeholder", "dummy", "xxxx", "xxxxx", "xxxxxx",
+    "<token>", "<api_key>", "<secret>", "<password>",
+}
+
 _PLACEHOLDER_SECRET_RE = re.compile(
     r"(?:my_gemini_api_key|your[_-]?key[_-]?here|changeme|<token>|<.*?>|your[_-]?secret|placeholder|dummy|example|xxx+|foo|bar)",
     re.IGNORECASE,
@@ -375,10 +583,39 @@ _PLACEHOLDER_SECRET_RE = re.compile(
 
 
 def _is_placeholder_secret(file_rel: str, match_text: str) -> bool:
+    """True if match_text is demonstrably a placeholder/example credential, NEVER a real secret."""
+    if not match_text:
+        return True
+
+    clean_match = match_text.strip().strip("'\"`")
+
+    # Genuine credential patterns must NEVER be suppressed, even in example files
+    for pat in _KNOWN_GENUINE_SECRET_PATTERNS:
+        if pat.search(clean_match):
+            return False
+
+    clean_lower = clean_match.lower()
+
+    # Extract value part if assignment or yaml mapping: e.g. "API_KEY = your_key_here" or "pass: changeme"
+    val_part = clean_lower
+    if "=" in clean_lower:
+        val_part = clean_lower.split("=", 1)[1].strip().strip("'\"`")
+    elif ":" in clean_lower:
+        val_part = clean_lower.split(":", 1)[1].strip().strip("'\"`")
+
+    if val_part in _EXPLICIT_PLACEHOLDER_WORDS or clean_lower in _EXPLICIT_PLACEHOLDER_WORDS:
+        return True
+    if any(pw in val_part for pw in ("changeme", "your_api_key_here", "your-api-key-here", "your_key_here", "insert_key_here")):
+        return True
+    if all(c in "xX*#-" for c in val_part) and len(val_part) >= 3:
+        return True
+
+    # In template/example files, broader placeholder patterns apply
     f_lower = file_rel.lower()
-    if any(k in f_lower for k in (".example", ".sample", ".template")):
-        if _PLACEHOLDER_SECRET_RE.search(match_text):
+    if any(k in f_lower for k in (".example", ".sample", ".template", "example.")):
+        if _PLACEHOLDER_SECRET_RE.search(clean_match) or _PLACEHOLDER_SECRET_RE.search(val_part):
             return True
+
     return False
 
 
@@ -391,12 +628,19 @@ def normalize_gitleaks(raw: dict, root: Path) -> list[Finding]:
         end = int(item.get("EndLine") or start)
         rule = item.get("RuleID") or item.get("Rule") or "gitleaks.secret"
         match = (item.get("Match") or item.get("Secret") or "")[:200]
+
+        # Only suppress explicit placeholders. Secrets in comments or docstrings are NEVER dropped!
         if _is_placeholder_secret(rel_f, match):
+            _record_filtered_finding(
+                rule_id=f"gitleaks.{rule}",
+                rel_file=rel_f,
+                line=start,
+                category="secret",
+                reason="Placeholder/example credential pattern",
+                evidence=match,
+            )
             continue
-        if is_comment_or_docstring_only(
-            root, rel_f, start, end, rule_id=f"gitleaks.{rule}", category="secret", evidence=match
-        ):
-            continue
+
         findings.append(
             Finding(
                 rule_id=f"gitleaks.{rule}",
@@ -531,6 +775,14 @@ def normalize_semgrep(raw: dict, root: Path) -> list[Finding]:
         if is_comment_or_docstring_only(
             root, rel_path, start, end, rule_id=check_id, category=category, evidence=extra.get("lines", "")
         ):
+            _record_filtered_finding(
+                rule_id=check_id,
+                rel_file=rel_path,
+                line=start,
+                category=category,
+                reason="Non-executable comment, docstring, or benign variable assignment",
+                evidence=extra.get("lines", "")[:120],
+            )
             continue
         findings.append(
             Finding(
@@ -613,9 +865,7 @@ def normalize_trivy(raw: dict, root: Path) -> list[Finding]:
             # Cap Trivy misconfiguration severity consistently with vibe rules
             if "root" in title.lower() or "user" in title.lower():
                 severity = Severity.MEDIUM
-            elif "secret" in title.lower() or "key" in title.lower():
-                severity = Severity.HIGH
-            elif severity == Severity.CRITICAL and ("dockerfile" in str(target).lower() or mc_id.startswith("DS")):
+            elif "secret" in title.lower() or "key" in title.lower() or severity == Severity.CRITICAL and ("dockerfile" in str(target).lower() or mc_id.startswith("DS")):
                 severity = Severity.HIGH
 
             mc_rel = _rel(target, root)
@@ -640,6 +890,14 @@ def normalize_trivy(raw: dict, root: Path) -> list[Finding]:
             sec_match = (secret.get("Match", "") or "")[:200]
             sec_rel = _rel(target, root)
             if _is_placeholder_secret(sec_rel, sec_match):
+                _record_filtered_finding(
+                    rule_id=f"trivy.secret.{secret.get('RuleID', 'unknown')}",
+                    rel_file=sec_rel,
+                    line=secret.get("StartLine", 1),
+                    category="secret",
+                    reason="Placeholder/example credential pattern",
+                    evidence=sec_match,
+                )
                 continue
             findings.append(
                 Finding(
@@ -760,7 +1018,7 @@ def normalize_npm_audit(raw: dict, root: Path) -> list[Finding]:
                     if v.upper().startswith("GHSA-") or v.upper().startswith("CVE-"):
                         aliases.append(v.upper())
 
-            title_str = "; ".join(title_parts)[:120] or f"Vulnerability in {pkg_name}"
+            title_str = "; ".join(str(p) for p in title_parts if p)[:120] or f"Vulnerability in {pkg_name}"
             fix_avail = info.get("fixAvailable")
             line = find_manifest_line("package.json", pkg_name, root)
             installed_ver = info.get("version", "") or info.get("range", "?")
@@ -815,6 +1073,14 @@ def normalize_bandit(raw: dict, root: Path) -> list[Finding]:
         if is_comment_or_docstring_only(
             root, bandit_rel, start_line, end_line, rule_id=f"bandit.{test_id}", category=cat, evidence=item.get("code", "")
         ):
+            _record_filtered_finding(
+                rule_id=f"bandit.{test_id}",
+                rel_file=bandit_rel,
+                line=start_line,
+                category=cat,
+                reason="Non-executable comment, docstring, or benign assignment",
+                evidence=item.get("code", "")[:120],
+            )
             continue
         findings.append(
             Finding(

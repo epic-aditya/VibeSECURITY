@@ -5,14 +5,19 @@ Supports:
 - vibesec doctor (diagnose external tools)
 - vibesec demo (scan bundled demo application)
 - vibesec bench (run evaluation benchmark)
-- vibesec list, show
+- vibesec list, show, clear
+
+Exit codes:
+- 0: Success (scan completed cleanly, no severity threshold breach)
+- 1: Security failure (--fail-on threshold breached)
+- 2: Bad input or CLI usage error (missing target, non-existent path)
+- 3: Tool or pipeline execution error (extraction failure, runtime crash)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -139,7 +144,15 @@ def _handle_scan(args) -> int:
 
     if not args.zip and not args.github and not args.dir:
         print("error: one of --zip, --dir, or --github is required", file=sys.stderr)
-        return 1
+        return 2
+
+    if args.dir and not args.dir.exists():
+        print(f"error: target directory does not exist: {args.dir}", file=sys.stderr)
+        return 2
+
+    if args.zip and not args.zip.exists():
+        print(f"error: target ZIP archive does not exist: {args.zip}", file=sys.stderr)
+        return 2
 
     if args.output:
         out_dir = Path(args.output)
@@ -148,10 +161,6 @@ def _handle_scan(args) -> int:
             args.pdf = out_dir / "vibesec-security-report.pdf"
         if not args.sarif:
             args.sarif = out_dir / "vibesec.sarif"
-        if not args.html:
-            args.html = out_dir / "vibesec-report.html"
-        if not args.csv:
-            args.csv = out_dir / "vibesec-findings.csv"
         if not args.markdown:
             args.markdown = out_dir / "vibesec-report.md"
         if not args.sbom:
@@ -168,7 +177,7 @@ def _handle_scan(args) -> int:
         )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
-        return 1
+        return 3
 
     print(f"Scan #{result.scan_id} — {result.target_name}")
     print(

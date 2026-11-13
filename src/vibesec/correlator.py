@@ -86,38 +86,39 @@ def _family(cwe: str) -> str:
 
 def _prefer_code(a: Finding, b: Finding) -> Finding:
     """Pick the stronger code finding as the merge base; absorb the other."""
-    if a.rule_id.startswith("vibe.") and not b.rule_id.startswith("vibe."):
+    if a.severity.rank > b.severity.rank:
+        base, other = a, b
+    elif b.severity.rank > a.severity.rank:
+        base, other = b, a
+    elif a.rule_id.startswith("vibe.") and not b.rule_id.startswith("vibe."):
         base, other = a, b
     elif b.rule_id.startswith("vibe.") and not a.rule_id.startswith("vibe."):
         base, other = b, a
-    elif a.severity.rank >= b.severity.rank:
-        base, other = a, b
     else:
-        base, other = b, a
+        base, other = a, b
 
-    if a.location.start_line == 1 and b.location.start_line > 1:
-        base.location = b.location
-    elif b.location.start_line == 1 and a.location.start_line > 1:
-        base.location = a.location
+    if "dockerfile" in (base.location.file.lower() if base.location else ""):
+        if a.location.start_line == 1 and b.location.start_line > 1:
+            base.location = b.location
+        elif b.location.start_line == 1 and a.location.start_line > 1:
+            base.location = a.location
 
     base.confidence = max(base.confidence, other.confidence)
     base.taint_reachable = base.taint_reachable or other.taint_reachable
     base.sensitive_asset = base.sensitive_asset or other.sensitive_asset
     base.auth_context = base.auth_context or other.auth_context
     base.impact_class = base.impact_class or other.impact_class
-    if not base.evidence_chain and other.evidence_chain:
-        base.evidence_chain = list(other.evidence_chain)
-    elif other.evidence_chain and len(other.evidence_chain) < len(base.evidence_chain):
+    if not base.evidence_chain and other.evidence_chain or other.evidence_chain and len(other.evidence_chain) < len(base.evidence_chain):
         base.evidence_chain = list(other.evidence_chain)
 
     # Merge unique evidence lines without duplicates
     ev_lines = []
     seen_lines = set()
-    for l in (base.evidence or "").splitlines() + (other.evidence or "").splitlines():
-        l_str = l.strip()
+    for ev_line in (base.evidence or "").splitlines() + (other.evidence or "").splitlines():
+        l_str = ev_line.strip()
         if l_str and l_str not in seen_lines:
             seen_lines.add(l_str)
-            ev_lines.append(l)
+            ev_lines.append(ev_line)
     base.evidence = "\n".join(ev_lines)[:800]
 
     for src in other.sources:
@@ -199,6 +200,8 @@ def _correlate_code(findings: list[Finding]) -> list[Finding]:
     for f in sorted_findings:
         matched = False
         f_fam = _family(f.cwe)
+
+        # Pass 1: Exact matches (Dockerfile secrets, same line duplicate, or exact rule collision within 2 lines)
         for idx, m in enumerate(merged):
             same_file = _same_file(f.location.file if f.location else "", m.location.file if m.location else "")
             line_diff = abs((f.location.start_line if f.location else 0) - (m.location.start_line if m.location else 0))
@@ -213,8 +216,8 @@ def _correlate_code(findings: list[Finding]) -> list[Finding]:
                 matched = True
                 break
 
-            # 1. Merge duplicates at the exact same line
-            if same_file and line_diff == 0:
+            # 1. Merge duplicates at the exact same line if same rule, same CWE family, or both secrets
+            if same_file and line_diff == 0 and (f.rule_id == m.rule_id or f_fam == m_fam or both_secrets):
                 merged[idx] = _prefer_code(m, f)
                 matched = True
                 break
@@ -225,21 +228,26 @@ def _correlate_code(findings: list[Finding]) -> list[Finding]:
                 matched = True
                 break
 
-            # 3. Equivalent CWE class within +/- 2 lines
-            # e.g. eval at backend/main.py:106, convert at server/index.js:63
-            if same_file and line_diff <= 2:
-                if f_fam == m_fam and f_fam not in ("", "CWE-0", "unknown"):
-                    merged[idx] = _prefer_code(m, f)
-                    matched = True
-                    break
-                # Both injection or both secrets or both code execution (eval / exec)
-                if f_fam == m_fam and (
-                    ("eval" in f.rule_id.lower() and "eval" in m.rule_id.lower())
-                    or ("exec" in f.rule_id.lower() and "exec" in m.rule_id.lower())
-                ):
-                    merged[idx] = _prefer_code(m, f)
-                    matched = True
-                    break
+        # Pass 2: Loose matches (Equivalent CWE class within +/- 2 lines)
+        if not matched:
+            for idx, m in enumerate(merged):
+                same_file = _same_file(f.location.file if f.location else "", m.location.file if m.location else "")
+                line_diff = abs((f.location.start_line if f.location else 0) - (m.location.start_line if m.location else 0))
+                m_fam = _family(m.cwe)
+
+                if same_file and line_diff <= 2:
+                    if f_fam == m_fam and f_fam not in ("", "CWE-0", "unknown"):
+                        merged[idx] = _prefer_code(m, f)
+                        matched = True
+                        break
+                    # Both injection or both secrets or both code execution (eval / exec)
+                    if f_fam == m_fam and (
+                        ("eval" in f.rule_id.lower() and "eval" in m.rule_id.lower())
+                        or ("exec" in f.rule_id.lower() and "exec" in m.rule_id.lower())
+                    ):
+                        merged[idx] = _prefer_code(m, f)
+                        matched = True
+                        break
 
         if not matched:
             merged.append(f)

@@ -635,7 +635,7 @@ def _scan_asm_entities(root: Path) -> tuple[
             r"""(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:express|Router|express\.Router|fastify)\b""",
             content,
         ))
-        for (v_rel, v_name) in router_var_prefixes.keys():
+        for (v_rel, v_name) in router_var_prefixes:
             if v_rel == rel:
                 valid_receivers.add(v_name)
 
@@ -742,10 +742,10 @@ def _scan_asm_entities(root: Path) -> tuple[
     deduped_eps: list[EntryPoint] = []
     seen: set[tuple[str, str, str]] = set()
     for ep in sorted(entry_points, key=lambda e: (e.file, e.line, e.path, e.method)):
-        key = (ep.file, ep.method, ep.path)
-        if key in seen:
+        ep_key = (ep.file, ep.method, ep.path)
+        if ep_key in seen:
             continue
-        seen.add(key)
+        seen.add(ep_key)
         deduped_eps.append(ep)
 
     for idx, ep in enumerate(deduped_eps, 1):

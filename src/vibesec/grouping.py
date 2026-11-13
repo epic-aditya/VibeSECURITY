@@ -215,7 +215,7 @@ def _pick_minimal_target(
 
 def build_fix_actions(findings: list[Finding]) -> list[FixAction]:
     """Group dependency findings into ordered FixAction plans."""
-    groups: dict[tuple[str, str, str], list[Finding]] = {}
+    groups: dict[tuple[str, str, str, str], list[Finding]] = {}
 
     for f in findings:
         if f.category != "dependency":
@@ -230,7 +230,7 @@ def build_fix_actions(findings: list[Finding]) -> list[FixAction]:
         groups[key].append(f)
 
     actions: list[FixAction] = []
-    for (eco, pkg, ver, lockfile), group in groups.items():
+    for (eco, pkg, ver, _lockfile), group in groups.items():
         finding_fixed: dict[str, list[str]] = {}
         for f in group:
             cve_id = f.aliases[0] if f.aliases else f.rule_id

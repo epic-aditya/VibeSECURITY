@@ -1,28 +1,47 @@
-"""Stage 6 — Risk Prioritization (Scoring v2).
+"""Stage 6 — Risk Prioritization (Scoring v3 - 0–10 Multiplicative Model).
 
-Static-analysis-only scoring. Deterministic and reproducible.
+Deterministic, transparent, static-analysis-only risk scoring.
+All scores are bounded in [0.0, 10.0] with CVSS-aligned severity thresholds.
 
-Formula 1: Code, Secret, Config, License findings
-    score = 4·severity_rank + 2·confidence + 1.5·taint + auth + sensitive
+Formula 1: Code, Secret, Config, and License findings:
+    Score = min(10.0, base · Conf · T · A · D · S_asset)
 
-    severity_rank : CRITICAL=4 … INFO=0
-    confidence    : 0.0–1.0
-    taint         : 1.0 if user input reaches sink, else 0
-    auth          : public route 0.5 · authenticated 0.1 · unknown 0
-    sensitive     : 1.0 if credentials/PII/auth token/payment data involved
+    base    : CVSS base score (0.0-10.0) if present, else mapped from raw severity:
+              CRITICAL=9.5, HIGH=7.5, MEDIUM=5.0, LOW=2.0, INFO=0.0
+    Conf    : Scanner confidence factor = 0.6 + 0.4 · confidence (range: 0.6-1.0)
+    T       : Taint / reachability factor:
+              1.0 for proven taint flow or non-sink findings (secrets/config/license)
+              0.75 for unconfirmed/static code sinks without proven user input flow
+    A       : Authentication context factor:
+              1.0 for public / unauthenticated endpoints
+              0.9 for unknown / internal functions
+              0.75 for authenticated endpoints
+    D       : Exposure multiplier:
+              RUNTIME_SERVER=1.0, RUNTIME_BUNDLE=1.0, UNKNOWN=0.7,
+              TOOLCHAIN_BUILD=0.35, TOOLCHAIN_DEVSERVER=0.25, TEST=0.2
+    S_asset : Sensitive asset multiplier: 1.15 if credentials/PII/tokens, else 1.0
 
-Formula 2: Dependency findings (Scoring v2.1, exposure-adjusted)
-    score = (4·S + 2·X + 1.5·R + K) · D
+Formula 2: Dependency findings (Exposure- & Reachability-adjusted):
+    Score = min(10.0, base · R · D · (1 + 0.3·EPSS) + KEV_bonus)
 
-    S : severity rank (CRITICAL=4, HIGH=3, MEDIUM=2, LOW=1, INFO=0)
-    X : EPSS exploit probability 0.0–1.0 (default 0.3 when unknown)
-    R : reachability (CALLED 1.0, IMPORTED 0.7, TRANSITIVE_OF_RUNTIME 0.4,
-        UNKNOWN 0.4, TOOLCHAIN 0.1, NOT_IMPORTED 0.0)
-    K : CISA KEV bonus (2.0 if in KEV catalog, else 0.0)
-    D : exposure multiplier (RUNTIME_SERVER 1.0, RUNTIME_BUNDLE 1.0,
-        UNKNOWN 0.7, TOOLCHAIN_BUILD 0.35, TOOLCHAIN_DEVSERVER 0.25, TEST 0.2)
+    base      : CVSS base score if present, else mapped from raw severity
+    R         : Reachability factor:
+                CALLED=1.0, IMPORTED=0.75, UNKNOWN=0.5,
+                TRANSITIVE_OF_RUNTIME=0.4, TOOLCHAIN=0.25, NOT_IMPORTED=0.15
+                (Note: NOT_IMPORTED is demoted to LOW or below, never hidden,
+                because dynamic imports or CLI entry points can defeat static checks)
+    D         : Exposure multiplier (same as Formula 1)
+    EPSS      : Exploit Prediction Scoring System probability (0.0-1.0).
+                When unmeasured/offline, term is dropped (multiplier=1.0, labeled "not measured").
+    KEV_bonus : CISA Known Exploited Vulnerability bonus (3.0 · D if listed, else 0.0).
+                Findings that are CALLED in RUNTIME and in CISA KEV are guaranteed >= 7.0 (HIGH).
 
-Buckets: >=16 CRITICAL · >=12 HIGH · >=8 MEDIUM · >=4 LOW · else INFO
+Severity Buckets (CVSS-aligned):
+    >= 9.0 : CRITICAL
+    >= 7.0 : HIGH
+    >= 4.0 : MEDIUM
+    >  0.0 : LOW
+    == 0.0 : INFO
 """
 
 from __future__ import annotations
@@ -31,26 +50,62 @@ from typing import Any
 
 from .models import Finding, Severity
 
-# Code scoring weights
-_W_SEVERITY = 4.0
-_W_CONFIDENCE = 2.0
-_W_TAINT = 1.5
-_W_SENSITIVE = 1.0
-_AUTH_RISK = {"public": 0.5, "unauthenticated": 0.5, "authenticated": 0.1}
+# =============================================================================
+# SCORING CONFIGURATION (Single Source of Truth)
+# =============================================================================
 
-# Dependency scoring constants
-_REACHABILITY_WEIGHTS = {
-    "CALLED": 1.0,
-    "IMPORTED": 0.7,
-    "TRANSITIVE_OF_RUNTIME": 0.4,
-    "TRANSITIVE_OF_IMPORTED": 0.4,  # legacy history compatibility
-    "UNKNOWN": 0.4,
-    "TOOLCHAIN": 0.1,
-    "BUILD_TOOL": 0.2,  # legacy history compatibility
-    "NOT_IMPORTED": 0.0,
+MAX_SCORE: float = 10.0
+
+# Severity base score mapping (when CVSS score is unavailable)
+SEVERITY_BASE_SCORES: dict[Severity, float] = {
+    Severity.CRITICAL: 9.5,
+    Severity.HIGH: 7.5,
+    Severity.MEDIUM: 5.0,
+    Severity.LOW: 2.0,
+    Severity.INFO: 0.0,
 }
 
-_EXPOSURE_MULTIPLIERS = {
+# CVSS-aligned bucket thresholds: (minimum_score, Severity)
+THRESHOLDS: list[tuple[float, Severity]] = [
+    (9.0, Severity.CRITICAL),
+    (7.0, Severity.HIGH),
+    (4.0, Severity.MEDIUM),
+    (0.001, Severity.LOW),
+]
+
+# Code scoring factors
+CONFIDENCE_MIN: float = 0.6
+CONFIDENCE_WEIGHT: float = 0.4
+
+TAINT_FACTORS: dict[str, float] = {
+    "REACHABLE": 1.0,
+    "NOT_REACHABLE": 0.75,
+    "NOT_APPLICABLE": 1.0,
+}
+
+AUTH_FACTORS: dict[str, float] = {
+    "public": 1.0,
+    "unauthenticated": 1.0,
+    "unknown": 0.9,
+    "authenticated": 0.75,
+}
+
+SENSITIVE_ASSET_MULTIPLIER: float = 1.15
+
+# Dependency reachability factors (R)
+REACHABILITY_FACTORS: dict[str, float] = {
+    "CALLED": 1.0,
+    "IMPORTED": 0.75,
+    "UNKNOWN": 0.5,
+    "TRANSITIVE_OF_RUNTIME": 0.4,
+    "TRANSITIVE_OF_IMPORTED": 0.4,
+    "TOOLCHAIN": 0.25,
+    "BUILD_TOOL": 0.25,
+    "NOT_IMPORTED": 0.15,
+}
+
+# Exposure multipliers (D)
+EXPOSURE_MULTIPLIERS: dict[str, float] = {
     "RUNTIME_SERVER": 1.0,
     "RUNTIME_BUNDLE": 1.0,
     "UNKNOWN": 0.7,
@@ -59,60 +114,138 @@ _EXPOSURE_MULTIPLIERS = {
     "TEST": 0.2,
 }
 
-_SCOPE_MULTIPLIERS = {
+# Scope fallback multipliers (when exposure_class is absent)
+SCOPE_MULTIPLIERS: dict[str, float] = {
     "prod": 1.0,
     "optional": 0.6,
     "dev": 0.35,
 }
 
-_DEFAULT_EPSS_UNKNOWN = 0.3
-_KEV_BONUS = 2.0
+EPSS_FACTOR: float = 0.3
+KEV_BONUS: float = 3.0
 
-MAX_SCORE = 22.0
+# Aliases for backward compatibility
+_THRESHOLDS = THRESHOLDS
+_EXPOSURE_MULTIPLIERS = EXPOSURE_MULTIPLIERS
+_REACHABILITY_WEIGHTS = REACHABILITY_FACTORS
+_SCOPE_MULTIPLIERS = SCOPE_MULTIPLIERS
+_KEV_BONUS = KEV_BONUS
 
-_THRESHOLDS = [
-    (16.0, Severity.CRITICAL),
-    (12.0, Severity.HIGH),
-    (8.0, Severity.MEDIUM),
-    (4.0, Severity.LOW),
-]
+# Human-readable formula strings for documentation and reporting
+SCORING_FORMULA_CODE = "Score = min(10.0, base · Conf · T · A · D · S_asset)"
+SCORING_FORMULA_DEPENDENCY = "Score = min(10.0, base · R · D · (1 + 0.3·EPSS) + KEV_bonus)"
+
+
+def get_base_score(finding: Finding) -> float:
+    """Extract CVSS base score or map from raw severity."""
+    if finding.cvss_score is not None:
+        return min(10.0, max(0.0, float(finding.cvss_score)))
+    return SEVERITY_BASE_SCORES.get(finding.severity, 0.0)
 
 
 def score_finding(finding: Finding) -> Finding:
-    """Attach risk_score and risk_bucket in place; returns the same finding."""
+    """Attach risk_score (0.0-10.0) and risk_bucket in place; returns the finding."""
     score = _score_dependency(finding) if finding.category == "dependency" else _score_code(finding)
-
-    finding.risk_score = round(score, 2)
-    finding.risk_bucket = _bucket(score)
+    finding.risk_score = round(min(10.0, max(0.0, score)), 2)
+    finding.risk_bucket = _bucket(finding.risk_score)
     return finding
 
 
 def _score_code(finding: Finding) -> float:
-    base = (
-        _W_SEVERITY * finding.severity.rank
-        + _W_CONFIDENCE * finding.confidence
-        + (_W_TAINT if finding.taint_reachable else 0.0)
-        + _AUTH_RISK.get((finding.auth_context or "").lower(), 0.0)
-        + (_W_SENSITIVE if finding.sensitive_asset else 0.0)
-    )
+    base = get_base_score(finding)
+    if base <= 0.0:
+        return 0.0
+
+    # Confidence factor (0.6 - 1.0)
+    c_raw = finding.confidence if finding.confidence is not None else 0.8
+    conf = CONFIDENCE_MIN + (CONFIDENCE_WEIGHT * max(0.0, min(1.0, c_raw)))
+
+    # Taint factor (1.0 or 0.75)
+    if finding.category in ("secret", "config", "license"):
+        t = TAINT_FACTORS["NOT_APPLICABLE"]
+    elif finding.taint_reachable:
+        t = TAINT_FACTORS["REACHABLE"]
+    else:
+        t = TAINT_FACTORS["NOT_REACHABLE"]
+
+    # Authentication factor (0.75 - 1.0)
+    auth_ctx = (finding.auth_context or "").lower().strip()
+    a = AUTH_FACTORS.get(auth_ctx, AUTH_FACTORS["unknown"])
+
+    # Exposure factor (0.2 - 1.0)
     if finding.exposure_class:
-        d = _EXPOSURE_MULTIPLIERS.get(finding.exposure_class.upper(), 1.0)
-        return base * d
-    return base
+        d = EXPOSURE_MULTIPLIERS.get(finding.exposure_class.upper(), 1.0)
+    else:
+        fpath = (finding.location.file if finding.location else "").replace("\\", "/").lower()
+        parts = fpath.split("/")
+        if any(p in ("tests", "test", "fixtures", "__tests__", "spec", "specs") for p in parts):
+            d = EXPOSURE_MULTIPLIERS["TEST"]
+        elif any(p in ("scripts",) for p in parts):
+            d = EXPOSURE_MULTIPLIERS["TOOLCHAIN_BUILD"]
+        else:
+            d = 1.0
+
+    # Sensitive asset factor (1.15 or 1.0)
+    s_asset = SENSITIVE_ASSET_MULTIPLIER if finding.sensitive_asset else 1.0
+
+    if finding.category == "secret" and d <= EXPOSURE_MULTIPLIERS["TEST"] and not finding.remediation:
+        finding.remediation = "Verify whether this test credential is live in production or restricted to test environment."
+
+    return base * conf * t * a * d * s_asset
+
+
+def _score_dependency(finding: Finding) -> float:
+    base = get_base_score(finding)
+    if base <= 0.0 and not finding.in_cisa_kev:
+        return 0.0
+
+    r = REACHABILITY_FACTORS.get((finding.reachability or "UNKNOWN").upper(), 0.5)
+
+    if finding.exposure_class:
+        d = EXPOSURE_MULTIPLIERS.get(finding.exposure_class.upper(), 0.7)
+    elif (finding.reachability or "").upper() in ("TOOLCHAIN", "BUILD_TOOL"):
+        d = EXPOSURE_MULTIPLIERS["TOOLCHAIN_BUILD"]
+    else:
+        d = SCOPE_MULTIPLIERS.get((finding.scope or "prod").lower(), 1.0)
+
+    # EPSS term: when unmeasured or offline, term is dropped (multiplier 1.0)
+    if finding.epss_score is not None:
+        epss_term = 1.0 + (EPSS_FACTOR * max(0.0, min(1.0, finding.epss_score)))
+    else:
+        epss_term = 1.0
+
+    # KEV bonus scaled by exposure
+    kev_bonus = (KEV_BONUS * d) if finding.in_cisa_kev else 0.0
+
+    raw_score = (base * r * d * epss_term) + kev_bonus
+
+    # Invariant: KEV-listed and CALLED in runtime is never below HIGH (>= 7.0)
+    if finding.in_cisa_kev and r >= 1.0 and d >= 1.0:
+        raw_score = max(raw_score, 7.0)
+
+    return raw_score
+
+
+def _bucket(score: float) -> Severity:
+    for threshold, bucket in THRESHOLDS:
+        if score >= threshold:
+            return bucket
+    return Severity.INFO
 
 
 def is_actionable(f: Finding) -> bool:
-    """Actionable excludes INFO and test/fixture/script findings."""
+    """Actionable excludes INFO and non-secret test/fixture/build-tool findings."""
     if f.risk_bucket == Severity.INFO or f.severity == Severity.INFO:
         return False
+    # Secrets in test or script paths must remain actionable for manual credential verification
+    if f.category == "secret":
+        return True
     exp = (f.exposure_class or "").upper()
     if exp in ("TEST", "TOOLCHAIN_BUILD", "TOOLCHAIN_DEVSERVER") or exp.startswith("TOOLCHAIN"):
         return False
     fpath = (f.location.file if f.location else "").replace("\\", "/").lower()
     parts = fpath.split("/")
-    if any(p in ("tests", "test", "fixtures", "scripts", "__tests__", "spec", "specs") for p in parts):
-        return False
-    return True
+    return not any(p in ("tests", "test", "fixtures", "scripts", "__tests__", "spec", "specs") for p in parts)
 
 
 def calculate_risk_posture(
@@ -277,33 +410,10 @@ def calculate_risk_posture(
     return posture_stmt, details
 
 
-def _score_dependency(finding: Finding) -> float:
-    s = float(finding.severity.rank)
-    x = finding.epss_score if finding.epss_score is not None else _DEFAULT_EPSS_UNKNOWN
-    r = _REACHABILITY_WEIGHTS.get((finding.reachability or "UNKNOWN").upper(), 0.4)
-    k = _KEV_BONUS if finding.in_cisa_kev else 0.0
-    if finding.exposure_class:
-        d = _EXPOSURE_MULTIPLIERS.get(finding.exposure_class.upper(), 0.7)
-    elif (finding.reachability or "").upper() in ("TOOLCHAIN", "BUILD_TOOL"):
-        d = _EXPOSURE_MULTIPLIERS["TOOLCHAIN_BUILD"]
-    else:
-        d = _SCOPE_MULTIPLIERS.get((finding.scope or "prod").lower(), 1.0)
-
-    base = (4.0 * s) + (2.0 * x) + (1.5 * r) + k
-    return base * d
-
-
-def _bucket(score: float) -> Severity:
-    for threshold, bucket in _THRESHOLDS:
-        if score >= threshold:
-            return bucket
-    return Severity.INFO
-
-
 def score_all(findings: list[Finding]) -> list[Finding]:
+    """Score all findings in place and sort deterministically."""
     for f in findings:
         score_finding(f)
-    # Sort deterministically: risk_score desc, then rule_id, then file, then line, then title
     return sorted(
         findings,
         key=lambda f: (

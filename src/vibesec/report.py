@@ -94,6 +94,7 @@ def build_report(
     metadata: dict[str, Any] | None = None,
     asm: Any | None = None,
     offline: bool | None = None,
+    suppressed_findings: list[Finding] | None = None,
 ) -> Path:
     meta = dict(metadata or {})
     if offline is not None:
@@ -115,7 +116,7 @@ def build_report(
     pdf.cell(pdf.epw, 6, _t(f"Target: {target_name} | Generated: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}"), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
 
-    asm_dict = asm.to_dict() if hasattr(asm, "to_dict") else (asm or {})
+    asm_dict = asm.to_dict() if asm is not None and hasattr(asm, "to_dict") else (asm or {})
     attack_paths = asm_dict.get("attack_paths", []) or []
     entry_points = asm_dict.get("entry_points", []) or []
 
@@ -149,7 +150,8 @@ def build_report(
     info_cnt = sum(1 for f in findings if f.risk_bucket == Severity.INFO)
     max_score = max((f.risk_score for f in findings), default=0.0)
 
-    _body(pdf, f"Actionable: {p_details.get('actionable_findings', len(findings))} | Deprioritized: {p_details.get('deprioritized_findings', 0)} ({p_details.get('deprioritized_dependency_cves', 0)} dependency CVE(s), {p_details.get('deprioritized_test_toolchain', 0)} test/toolchain finding(s)) | Public State-Changing Routes: {p_details.get('public_state_changing_routes', 0)}")
+    supp_cnt = len(suppressed_findings) if suppressed_findings is not None else 0
+    _body(pdf, f"Actionable: {p_details.get('actionable_findings', len(findings))} | Deprioritized: {p_details.get('deprioritized_findings', 0)} ({p_details.get('deprioritized_dependency_cves', 0)} dependency CVE(s), {p_details.get('deprioritized_test_toolchain', 0)} test/toolchain finding(s)) | Filtered: {supp_cnt}")
     _body(pdf, f"Severity Breakdown: Critical: {crit_cnt} | High: {high_cnt} | Medium: {med_cnt} | Low: {low_cnt} | Info: {info_cnt} | Highest Score: {max_score:.1f}")
     _body(pdf, f"Attack Paths: {p_details.get('reachable_attack_paths', len(attack_paths))} reachable | Unauthenticated Critical Paths: {p_details.get('unauthenticated_critical_paths', 0)}")
     if p_details.get("cisa_kev_count", 0) > 0:
@@ -300,9 +302,7 @@ def build_report(
 
     # One compact line summary for license policy plus review items
     meta_info = meta
-    pkg_count = meta_info.get("license_packages_checked")
-    if not pkg_count:
-        pkg_count = len(set(f.package_name for f in findings if f.package_name)) or 1217
+    pkg_count = meta_info.get("license_packages_checked") or len(set(f.package_name for f in findings if f.package_name)) or len(findings)
     violations = [f for f in licenses if f.severity in (Severity.CRITICAL, Severity.HIGH)]
     reviews = [f for f in licenses if f not in violations]
     review_desc = ", ".join(f"{f.package_name} {f.title}" for f in reviews[:3])
@@ -318,7 +318,7 @@ def build_report(
 
     # 7. Metadata and Scoring Formulas Appendix
     _section(pdf, "7. Appendix: Transparent Scoring Formulas & Scan Metadata")
-    _body(pdf, f"Scan Mode: {'Offline (Isolated fallback)' if meta.get('offline') else 'Online (EPSS + CISA KEV verified)'}")
+    _body(pdf, f"Scan Mode: {'Offline (Isolated fallback; EPSS not measured)' if meta.get('offline') else 'Online (EPSS + CISA KEV verified)'}")
     if meta.get("trivy_db_date"):
         _body(pdf, f"Trivy Vulnerability DB Date: {meta.get('trivy_db_date')}")
     if meta.get("npm_advisory_date"):
@@ -326,9 +326,13 @@ def build_report(
     _body(pdf, "Attack Path Formula: PathScore = 10 * Impact(sink) * Exposure(auth) * Confidence")
     _body(pdf, "  Impact: Command/Code 1.0, SQL 0.9, Deserialization 0.85, SSRF/Path 0.7, IDOR 0.75, LLM Prompt 0.6, XSS 0.5")
     _body(pdf, "  Exposure: PUBLIC 1.0, UNKNOWN 0.8, AUTHENTICATED 0.5")
-    _body(pdf, "Dependency Formula: Score = (4*S + 2*X + 1.5*R + K) * D")
-    _body(pdf, "  S: Severity (4..0), X: EPSS (0..1), R: Reachability (CALLED 1.0..NOT_IMPORTED 0.0), K: CISA KEV bonus (2.0)")
-    _body(pdf, "  D: Exposure Multiplier (RUNTIME 1.0, UNKNOWN 0.7, TOOLCHAIN_BUILD 0.35, TOOLCHAIN_DEVSERVER 0.25, TEST 0.2)")
+    _body(pdf, "Code Finding Formula: Score = min(10.0, base * Conf * T * A * D * S_asset)")
+    _body(pdf, "  base: CVSS score or severity map (CRIT 9.5, HIGH 7.5, MED 5.0, LOW 2.0); Conf: 0.6 + 0.4*conf")
+    _body(pdf, "  T: Taint (1.0 reachable, 0.75 unconfirmed); A: Auth (public 1.0, auth 0.75); S_asset: 1.15/1.0")
+    _body(pdf, "Dependency Formula: Score = min(10.0, base * R * D * (1 + 0.3*EPSS) + KEV_bonus)")
+    _body(pdf, "  base: CVSS score or severity map; R: Reachability (CALLED 1.0, IMPORTED 0.75, NOT_IMPORTED 0.15)")
+    _body(pdf, "  D: Exposure (RUNTIME 1.0, UNKNOWN 0.7, TOOLCHAIN 0.35, TEST 0.2); KEV_bonus: 3.0*D")
+    _body(pdf, "Severity Buckets: CRITICAL >= 9.0, HIGH >= 7.0, MEDIUM >= 4.0, LOW > 0.0, INFO == 0.0")
 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)

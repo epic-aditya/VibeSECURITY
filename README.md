@@ -21,8 +21,8 @@ All analysis executes safely and deterministically without executing, compiling,
 - **Dependency Reachability & Exposure Classification**: Analyzes project lockfiles (`package-lock.json`, `poetry.lock`, `requirements.txt`) and call graphs to categorize vulnerabilities:
   - **Exposure classes**: `RUNTIME_SERVER`, `RUNTIME_BUNDLE`, `TOOLCHAIN_BUILD`, `TOOLCHAIN_DEVSERVER`, `TEST`.
   - **Reachability states**: `CALLED`, `IMPORTED`, `TRANSITIVE_OF_RUNTIME`, `NOT_IMPORTED`.
-- **Single Source of Truth Severity System**: Context-adjusts raw scanner severity using reachability, authentication boundaries, and runtime exposure to eliminate false positive alarm fatigue.
-- **Enterprise Multi-Format Reporting**:
+- **Single Source of Truth Severity System**: Context-adjusts raw scanner severity using reachability, authentication boundaries, and runtime exposure to reduce false positive alarm fatigue.
+- **Standardized Multi-Format Reporting**:
   - **Executive PDF Report**: Structured assessment summarizing risk posture, top findings, attack surface metrics, dependency fix plans, and license reviews.
   - **Developer Markdown Report**: Line-by-line code context, evidence snippets, and actionable remediation steps.
   - **SARIF 2.1.0 Export**: Fully compliant with GitHub Code Scanning, including step-by-step `codeFlows` for attack paths.
@@ -216,12 +216,12 @@ VibeSec is fully hardened for cloud and containerized deployment:
 
 ### 4. Interactive Tabs
 
-The portal is designed with an exclusive, enterprise-grade light theme featuring 4 focused production sections:
+The portal is designed with a clean light theme featuring 4 focused production sections:
 
 1. **Scan**: Configure target sources (ZIP upload or GitHub repo URL), trigger scans with real-time execution progress, and inspect the findings ledger with actionable cards, code evidence, and remediation advice.
 2. **Attack Surface & Paths**: Review discovered entrypoints, authentication states, parameter validations, application map graph visualizer, and ranked attack paths with step-by-step traces.
 3. **Dependencies**: Inspect lockfile packages, license compliance summaries, and prioritized dependency upgrade plans ordered by runtime exposure and reachability.
-4. **Reports**: Generate and download audit-ready PDF executive reports, Developer Markdown files, GitHub-compatible SARIF files, and CycloneDX 1.5 JSON SBOMs.
+4. **Reports**: Generate and download structured PDF executive reports, Developer Markdown files, GitHub-compatible SARIF files, and CycloneDX 1.5 JSON SBOMs.
 
 ---
 
@@ -229,32 +229,57 @@ The portal is designed with an exclusive, enterprise-grade light theme featuring
 
 VibeSec evaluates security risks through transparent, evidence-backed mathematical formulations rather than opaque heuristics:
 
-### Code & Secret Findings Formula
-$$\text{Score} = 4 \cdot S + 2 \cdot C + 1.5 \cdot T + A + E$$
-- $S$: Severity rank (Critical = 4, High = 3, Medium = 2, Low = 1, Info = 0)
-- $C$: Rule confidence score ($0.0 - 1.0$)
-- $T$: Static taint reachability ($1.0$ if reachable from an entrypoint, else $0.0$)
-- $A$: Authentication exposure context ($1.0$ for public routes, $0.5$ for authenticated)
-- $E$: Sensitive asset multiplier ($1.0$ for credentials/database, $0.5$ for general code)
+<!-- SCORING_FORMULA:START -->
+### Code & Secret Findings Formula (0–10 Multiplicative Scale)
+$$\text{Score} = \min(10.0, \text{base} \cdot \text{Conf} \cdot T \cdot A \cdot D \cdot S_{\text{asset}})$$ 
 
-### Attack Path Formula
-$$\text{Path Score} = 10 \times \text{Impact}(\text{sink}) \times \text{Exposure}(\text{auth}) \times \text{Confidence}$$
-- **Impact**: Code/Command Execution $1.0$, SQL Injection $0.9$, SSRF/Path Traversal $0.7$, IDOR $0.75$, LLM Prompt Injection $0.6$, XSS $0.5$.
-- **Exposure**: Public $1.0$, Unknown $0.8$, Authenticated $0.5$.
+- $\text{base}$: CVSS base score ($0.0 - 10.0$) if available, otherwise mapped from raw severity:
+  - CRITICAL: `9.5`, HIGH: `7.5`, MEDIUM: `5.0`, LOW: `2.0`, INFO: `0.0`
+- $\text{Conf}$: Confidence factor $= 0.6 + 0.4 \times \text{confidence}$ (range: `0.6 - 1.0`)
+- $T$: Taint / reachability factor:
+  - `1.0` for proven taint flow or non-sink rules (secrets, config, license)
+  - `0.75` for unconfirmed code sinks without proven user input flow
+- $A$: Authentication exposure context:
+  - Public / unauthenticated: `1.0`
+  - Unknown context: `0.9`
+  - Authenticated: `0.75`
+- $D$: Deployment exposure multiplier:
+  - `RUNTIME_SERVER` / `RUNTIME_BUNDLE`: `1.0`
+  - `UNKNOWN`: `0.7`
+  - `TOOLCHAIN_BUILD`: `0.35`
+  - `TOOLCHAIN_DEVSERVER`: `0.25`
+  - `TEST`: `0.2`
+- $S_{\text{asset}}$: Sensitive asset multiplier (`1.15` if credentials/PII/tokens, else `1.0`)
 
-### Dependency Vulnerability Formula
-$$\text{Dependency Score} = (4 \cdot S + 2 \cdot X + 1.5 \cdot R + K) \cdot D$$
-- $S$: Vulnerability severity rank ($4 \dots 0$)
-- $X$: EPSS exploit probability ($0.0 - 1.0$; $0.30$ default in offline mode)
-- $R$: Reachability status (CALLED $1.0$, IMPORTED $0.7$, TRANSITIVE_OF_RUNTIME $0.4$, UNKNOWN $0.4$, TOOLCHAIN $0.1$, NOT_IMPORTED $0.0$)
-- $K$: CISA Known Exploited Vulnerability (KEV) bonus ($+2.0$ if listed)
-- $D$: Runtime exposure multiplier:
-  - `RUNTIME_SERVER`: $1.0$
-  - `RUNTIME_BUNDLE`: $1.0$
-  - `UNKNOWN`: $0.7$
-  - `TOOLCHAIN_BUILD`: $0.35$
-  - `TOOLCHAIN_DEVSERVER`: $0.25$
-  - `TEST`: $0.20$
+### Attack Path Formula (0–10 Scale)
+$$\text{Path Score} = 10 \times \text{Impact}(\text{sink}) \times \text{Exposure}(\text{auth}) \times \text{Confidence}$$ 
+- **Impact**: Code/Command Execution `1.0`, SQL Injection `0.9`, Deserialization `0.85`, SSRF/Path Traversal `0.7`, IDOR `0.75`, LLM Prompt Injection `0.6`, XSS `0.5`.
+- **Exposure**: Public `1.0`, Unknown `0.8`, Authenticated `0.5`.
+
+### Dependency Vulnerability Formula (0–10 Scale)
+$$\text{Dependency Score} = \min(10.0, \text{base} \cdot R \cdot D \cdot (1 + 0.3 \cdot \text{EPSS}) + \text{KEV\_bonus})$$ 
+
+- $\text{base}$: CVSS base score ($0.0 - 10.0$) or severity base score map
+- $R$: Reachability status factor:
+  - `CALLED`: `1.0`
+  - `IMPORTED`: `0.75`
+  - `UNKNOWN`: `0.5`
+  - `TRANSITIVE_OF_RUNTIME`: `0.4`
+  - `TOOLCHAIN`: `0.25`
+  - `NOT_IMPORTED`: `0.15` *(demoted to LOW or below, never hidden)*
+- $D$: Deployment exposure multiplier (same as code findings)
+- $\text{EPSS}$: Exploit Prediction Scoring System probability ($0.0 - 1.0$). Dropped when unmeasured or offline (multiplier $1.0$, labeled 'not measured').
+- $\text{KEV\_bonus}$: CISA Known Exploited Vulnerability bonus (`3.0 \times D` if listed). Invariant: CALLED in RUNTIME and in CISA KEV is guaranteed $\ge 7.0$ (HIGH).
+
+### Unified Severity Buckets (CVSS-Aligned)
+| Score Range | Severity Bucket | Action Priority |
+|---|---|---|
+| $[9.0, 10.0]$ | **CRITICAL** | Immediate remediation |
+| $[7.0, 9.0)$ | **HIGH** | Required fix before production deployment |
+| $[4.0, 7.0)$ | **MEDIUM** | Scheduled backlog remediation |
+| $(0.0, 4.0)$ | **LOW** | Informational / low-exposure hardening |
+| $0.0$ | **INFO** | Informational observation |
+<!-- SCORING_FORMULA:END -->
 
 ---
 
@@ -262,9 +287,10 @@ $$\text{Dependency Score} = (4 \cdot S + 2 \cdot X + 1.5 \cdot R + K) \cdot D$$
 
 ```
 VibeSECURITY/
-├── .github/
-│   └── workflows/
-│       └── vibesec-scan.yml      # GitHub Actions CI workflow
+├── docs/
+│   ├── ARCHITECTURE.md           # 10-stage technical data flow & architecture
+│   ├── DESIGN_RATIONALE.md       # CVSS-aligned 0–10 scoring model specification
+│   └── THREAT_MODEL.md           # Threat model, sandboxing, and defenses
 ├── rules/
 │   └── vibe_code/
 │       ├── vibe_javascript.yaml  # Custom Semgrep AST rules for JS/TS
@@ -279,6 +305,8 @@ VibeSECURITY/
 │       │   ├── pip_audit.py
 │       │   ├── semgrep_scanner.py
 │       │   └── trivy.py
+│       ├── data/
+│       │   └── sarif-schema-2.1.0.json # OASIS SARIF validation schema
 │       ├── asm.py                # Application Security Model construction
 │       ├── attack_paths.py       # Inter-procedural taint tracing
 │       ├── cli.py                # Command-line interface definitions
@@ -301,8 +329,14 @@ VibeSECURITY/
 │       ├── sbom.py               # CycloneDX 1.5 JSON SBOM builder
 │       └── storage.py            # SQLite scan record persistence
 ├── app.py                        # Streamlit 4-tab web application
+├── Dockerfile                    # Hardened unprivileged container (UID 1000)
 ├── pyproject.toml                # Build system & package configuration
 ├── requirements.txt              # Production Python package requirements
+├── Technical Architecture & Internal Working Specification.md
+├── vibesec_sbom.json             # CycloneDX 1.5 JSON self-SBOM
+├── SECURITY.md                   # Vulnerability disclosure policy
+├── CONTRIBUTING.md               # Contribution guidelines
+├── CHANGELOG.md                  # Release change ledger
 ├── README.md                     # Comprehensive documentation
 └── .gitignore                    # Git exclusions
 ```

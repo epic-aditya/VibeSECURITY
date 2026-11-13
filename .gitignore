@@ -40,12 +40,14 @@ Thumbs.db
 .vscode/
 .github/
 .devcontainer/
+.hypothesis/
+.mypy_cache/
 
 # Tests & fixtures (excluded from production repository)
 tests/
-
-# Private instructions and prompt files
+evaluation/
 instructions/
+scripts/
 *.patch
 
 # Environment variables

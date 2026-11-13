@@ -6,6 +6,7 @@ Falls back gracefully when pip-audit is not installed.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .base import find_executable, get_tool_version, run_json, tool_available
@@ -27,13 +28,15 @@ def _is_pinned_requirements(req_path: Path) -> bool:
     return has_pkg
 
 
-def run_pip_audit(target: Path) -> dict:
+def run_pip_audit(target: Path, offline: bool = False) -> dict:
     """Run pip-audit against Python dependency files in the target directory.
 
     Enforces I-01:
     - Runs only as `pip-audit --disable-pip --no-deps -r <file> -f json`
     - Checks for pinned requirements (==). If not fully pinned, SKIPPED with reason:
       "requirements not pinned; Trivy covers Python dependencies"
+    - Offline mode = SKIPPED with reason:
+      "offline mode (--no-network); pip-audit requires network advisory DB"
     """
     version = get_tool_version("pip-audit")
     if not tool_available("pip-audit"):
@@ -42,6 +45,16 @@ def run_pip_audit(target: Path) -> dict:
             "_skipped": "pip-audit not installed",
             "_state": "SKIPPED",
             "_reason": "pip-audit not installed",
+            "_version": version,
+        }
+
+    is_off = offline or (os.environ.get("VIBESEC_OFFLINE", "").strip() in ("1", "true", "yes", "on"))
+    if is_off:
+        return {
+            "dependencies": [],
+            "_skipped": "offline mode (--no-network); pip-audit requires network advisory DB",
+            "_state": "SKIPPED",
+            "_reason": "offline mode (--no-network); pip-audit requires network advisory DB",
             "_version": version,
         }
 

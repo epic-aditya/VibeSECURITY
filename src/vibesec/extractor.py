@@ -18,8 +18,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 GITHUB_URL_RE = re.compile(
-    r"^https?://(?:www\.)?github\.com/(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?/?$"
+    r"^https://(?:www\.)?github\.com/(?P<owner>[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38})/(?P<repo>[a-zA-Z0-9_.-]{1,100}?)(?:\.git)?/?$"
 )
+
+
+def is_binary_file(path: Path) -> bool:
+    """Detect binary files dynamically by inspecting the first 1024 bytes for null bytes or UTF-8 decode failure."""
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(1024)
+        if not chunk:
+            return False
+        if b"\x00" in chunk:
+            return True
+        chunk.decode("utf-8")
+        return False
+    except (UnicodeDecodeError, OSError):
+        return True
 
 SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
@@ -115,8 +130,26 @@ def extract_zip(zip_path: str | Path, dest: Path) -> Path:
                     ) from None
                 safe_members.append(member)
 
-            # Safe extraction of validated members only
-            zf.extractall(dest, members=safe_members)
+            # Safe streaming extraction of validated members only (enforcing decompression byte limit)
+            total_extracted = 0
+            for member in safe_members:
+                filename = member.filename.replace("\\", "/")
+                target_path = (dest / filename).resolve()
+                if member.is_dir():
+                    target_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as src_f, open(target_path, "wb") as dst_f:
+                    while True:
+                        chunk = src_f.read(65536)
+                        if not chunk:
+                            break
+                        total_extracted += len(chunk)
+                        if total_extracted > MAX_UNCOMPRESSED_BYTES:
+                            raise ExtractionError(
+                                f"Archive rejected: extracted content exceeded the {MAX_UNCOMPRESSED_BYTES} byte limit."
+                            )
+                        dst_f.write(chunk)
     except zipfile.BadZipFile as exc:
         raise ExtractionError(f"Corrupted or invalid ZIP archive: {exc}") from exc
 
@@ -134,11 +167,16 @@ def clone_github(url: str, dest: Path) -> Path:
     """Shallow, read-only clone of a public GitHub repository.
     Falls back to archive ZIP download over HTTPS if git is not installed or clone fails.
     """
-    match = GITHUB_URL_RE.match(url.strip())
+    url_clean = url.strip()
+    if any(ch in url_clean for ch in ("?", "#", ";", "&", "|", "`", "$", " ", "\t", "\n")):
+        raise ExtractionError("Only public https://github.com/<owner>/<repo> URLs are supported (no query parameters or control characters).")
+    match = GITHUB_URL_RE.match(url_clean)
     if not match:
         raise ExtractionError("Only public https://github.com/<owner>/<repo> URLs are supported.")
     owner = match.group("owner")
     repo = match.group("repo")
+    if owner in (".", "..") or repo in (".", "..") or repo.startswith("-"):
+        raise ExtractionError("Invalid repository owner or repository name.")
     dest.mkdir(parents=True, exist_ok=True)
     repo_dest = (dest / "repo").resolve()
 
@@ -246,6 +284,8 @@ def profile_project(root: Path) -> ProjectProfile:
             continue
         if path.stat().st_size > MAX_FILE_BYTES:
             continue
+        if is_binary_file(path):
+            continue
 
         profile.file_count += 1
         ext = path.suffix.lower()
@@ -294,9 +334,7 @@ def profile_project(root: Path) -> ProjectProfile:
     has_frontend = any(fw.lower() in frontend_fws for fw in profile.frameworks)
 
     if not has_frontend:
-        if (root / "index.html").is_file() or (root / "public" / "index.html").is_file() or (root / "src" / "index.html").is_file():
-            has_frontend = True
-        elif (root / "vite.config.js").is_file() or (root / "vite.config.ts").is_file() or (root / "webpack.config.js").is_file():
+        if (root / "index.html").is_file() or (root / "public" / "index.html").is_file() or (root / "src" / "index.html").is_file() or (root / "vite.config.js").is_file() or (root / "vite.config.ts").is_file() or (root / "webpack.config.js").is_file():
             has_frontend = True
 
     # Check package.json for "bin"

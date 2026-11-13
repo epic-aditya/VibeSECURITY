@@ -183,8 +183,8 @@ def collect_imports(root: Path) -> SourceImports:
             for idx, line in enumerate(text.splitlines(), start=1):
                 for pat in _JS_IMPORT_PATTERNS:
                     for match in pat.finditer(line):
-                        pkg = extract_js_package_name(match.group(1))
-                        if pkg:
-                            _add(out.config if config else out.javascript, pkg, f"{rel_str}:{idx}")
+                        pkg_str = extract_js_package_name(match.group(1))
+                        if pkg_str:
+                            _add(out.config if config else out.javascript, pkg_str, f"{rel_str}:{idx}")
 
     return out

@@ -8,7 +8,7 @@ from pathlib import Path
 from .base import find_executable, get_tool_version, run_json, tool_available
 
 
-def run_gitleaks(target: Path) -> dict:
+def run_gitleaks(target: Path, offline: bool = False) -> dict:
     """Run gitleaks in no-git (filesystem) mode; exit code 14 means findings."""
     version = get_tool_version("gitleaks")
     if not tool_available("gitleaks"):
@@ -32,8 +32,9 @@ def run_gitleaks(target: Path) -> dict:
         "--quiet",
     ]
     try:
-        run_json(cmd, timeout=300)
+        run_json(cmd, timeout=60)
     except Exception as exc:
+        report_path.unlink(missing_ok=True)
         return {
             "results": [],
             "_skipped": f"gitleaks execution failed: {exc}",
@@ -42,13 +43,12 @@ def run_gitleaks(target: Path) -> dict:
             "_version": version,
         }
 
-    if report_path.exists():
-        try:
+    try:
+        if report_path.exists():
             data = json.loads(report_path.read_text(encoding="utf-8"))
-            report_path.unlink(missing_ok=True)
             return {"results": data if isinstance(data, list) else [], "_state": "OK", "_version": version}
-        except Exception as exc:
-            report_path.unlink(missing_ok=True)
-            return {"results": [], "_state": "FAILED", "_reason": f"Corrupt report: {exc}", "_version": version}
-
-    return {"results": [], "_state": "OK", "_version": version}
+        return {"results": [], "_state": "OK", "_version": version}
+    except Exception as exc:
+        return {"results": [], "_state": "FAILED", "_reason": f"Corrupt report: {exc}", "_version": version}
+    finally:
+        report_path.unlink(missing_ok=True)

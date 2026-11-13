@@ -170,8 +170,9 @@ def parse_package_lock(lock_path: Path, package_json_path: Path | None = None) -
 
             version = pkg_info.get("version", "")
             alias_target = None
-            if pkg_info.get("name") and pkg_info.get("name").lower() != name:
-                alias_target = pkg_info.get("name").lower().strip()
+            raw_pname = pkg_info.get("name")
+            if isinstance(raw_pname, str) and raw_pname.lower() != name:
+                alias_target = raw_pname.lower().strip()
             elif isinstance(version, str) and version.startswith("npm:"):
                 resolved = resolve_npm_alias(version)
                 if resolved:

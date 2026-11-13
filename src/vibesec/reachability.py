@@ -24,9 +24,11 @@ from pathlib import Path
 from .dep_graph import DependencyGraph, build_project_dependency_graph
 from .exposure import (
     RUNTIME_CLASSES,
-    UNKNOWN as EXPOSURE_UNKNOWN,
     ExposureInfo,
     classify_exposure,
+)
+from .exposure import (
+    UNKNOWN as EXPOSURE_UNKNOWN,
 )
 from .imports import (
     BUILTIN_PY_IMPORT_TO_DIST,
@@ -159,18 +161,18 @@ class ReachabilityMap:
                         exposure_class=info.exposure_class,
                         evidence_chain=info.evidence_chain,
                     )
-        info = self.usages.get(pkg)
-        if info is None:
+        usage_info: UsageInfo | None = self.usages.get(pkg)
+        if usage_info is None:
             for k, cand in self.usages.items():
                 if k == pkg or k.split("/")[-1] == pkg or pkg.split("/")[-1] == k:
-                    info = cand
+                    usage_info = cand
                     break
-        if info is None:
+        if usage_info is None:
             return None
         return ExposureInfo(
-            package_name=info.package_name,
-            exposure_class=info.exposure_class,
-            evidence_chain=info.evidence_chain,
+            package_name=usage_info.package_name,
+            exposure_class=usage_info.exposure_class,
+            evidence_chain=usage_info.evidence_chain,
         )
 
 

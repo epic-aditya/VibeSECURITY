@@ -143,7 +143,7 @@ def _is_frontend_project(root: Path) -> bool:
             data = json.loads(pj.read_text(encoding="utf-8", errors="ignore"))
         except Exception:
             continue
-        deps = {}
+        deps: dict[str, Any] = {}
         for key in ("dependencies", "devDependencies"):
             deps.update(data.get(key) or {})
         if any(k in deps for k in ("react", "react-dom", "next", "vue", "svelte", "@angular/core", "solid-js")):
@@ -237,9 +237,7 @@ def _detect_workspace_roles(root: Path) -> tuple[dict[str, str], dict[str, str],
 
         if has_bundler and has_ui:
             role = RUNTIME_BUNDLE
-        elif has_server and not has_bundler:
-            role = RUNTIME_SERVER
-        elif has_server:
+        elif has_server and not has_bundler or has_server:
             role = RUNTIME_SERVER
         elif has_bundler:
             role = RUNTIME_BUNDLE
@@ -474,6 +472,12 @@ def classify_file_exposure(file_path: str | Path) -> str:
         return TEST
     if filename.startswith("test_") or filename.endswith(("_test.py", ".test.js", ".spec.js", ".test.ts", ".spec.ts", ".test.jsx", ".test.tsx")):
         return TEST
+
+    # Deployment / infra / migration scripts (production execution environment)
+    deploy_keywords = {"deploy", "release", "prod", "production", "migrate", "migration", "provision", "infra", "terraform", "k8s", "helm"}
+    if any(k in filename.lower() or any(k in part.lower() for part in parts) for k in deploy_keywords):
+        if any(d in {"scripts", "tools", "tasks", "infra", "deploy", "ci"} for d in parts):
+            return RUNTIME_SERVER
 
     # Toolchain / build / scripts
     toolchain_dirs = {"scripts", "tools", "tooling", "build", "tasks", ".github", ".husky"}

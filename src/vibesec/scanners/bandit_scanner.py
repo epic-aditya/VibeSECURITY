@@ -11,7 +11,7 @@ from pathlib import Path
 from .base import find_executable, get_tool_version, run_json, tool_available
 
 
-def run_bandit(target: Path) -> dict:
+def run_bandit(target: Path, offline: bool = False) -> dict:
     """Run bandit against Python files in the target directory.
 
     Enforces I-03:
@@ -52,7 +52,7 @@ def run_bandit(target: Path) -> dict:
     ]
 
     try:
-        data = run_json(cmd, timeout=300)
+        data = run_json(cmd, timeout=60)
         if isinstance(data, dict):
             data["_state"] = "OK"
             data["_version"] = version

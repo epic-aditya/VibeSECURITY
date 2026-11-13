@@ -83,7 +83,7 @@ def save_scan(
                 json.dumps(asm or {}),
             ),
         )
-        scan_id = int(cur.lastrowid)
+        scan_id = int(cur.lastrowid or 0)
         conn.executemany(
             "INSERT INTO findings (scan_id, finding_json) VALUES (?,?)",
             [(scan_id, json.dumps(f.to_dict())) for f in findings],

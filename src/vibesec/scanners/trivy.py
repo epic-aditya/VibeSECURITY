@@ -41,7 +41,7 @@ def run_trivy(target: Path, offline: bool = False) -> dict:
     cmd.append(str(target))
 
     try:
-        data = run_json(cmd, timeout=180)
+        data = run_json(cmd, timeout=90)
         if isinstance(data, dict):
             data["_state"] = "OK"
             data["_version"] = version

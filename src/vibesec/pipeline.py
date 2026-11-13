@@ -5,6 +5,7 @@ The target project is only ever READ, never built or executed.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ from .correlator import correlate
 from .dep_graph import DependencyGraph, build_project_dependency_graph
 from .exploit_intel import ExploitIntel
 from .grouping import FixAction, build_fix_actions
-from .models import AnalysisCoverage, Finding, Severity, ToolState, ToolStatus
+from .models import AnalysisCoverage, Finding, Location, Severity, ToolState, ToolStatus
 from .owasp import cwe_to_owasp
 from .prioritizer import score_all
 from .reachability import ReachabilityMap, analyze_reachability
@@ -40,6 +41,7 @@ from .taint import find_taint_flows
 class ScanResult:
     target_name: str
     profile: dict
+    source: str = ""
     findings: list[Finding] = field(default_factory=list)
     fix_actions: list[FixAction] = field(default_factory=list)
     suppressed_findings: list[Finding] = field(default_factory=list)
@@ -138,10 +140,8 @@ def run_pipeline(
 
     def _report(pct: int, msg: str) -> None:
         if progress_callback:
-            try:
+            with contextlib.suppress(Exception):
                 progress_callback(pct, msg)
-            except Exception:
-                pass
 
     _report(5, "Initializing workspace and preparing target...")
     is_offline = no_network or (os.environ.get("VIBESEC_OFFLINE", "").strip() in ("1", "true", "yes", "on"))
@@ -156,7 +156,7 @@ def run_pipeline(
         elif dir_path:
             root = Path(dir_path).resolve()
             target_name = root.name
-            source = str(root)
+            source = f"dir: {target_name}"
         else:
             root = extractor.clone_github(github_url or "", workspace)
             target_name = github_url or ""
@@ -164,7 +164,7 @@ def run_pipeline(
 
         _report(15, "Inspecting files and profiling project structure...")
         profile = extractor.profile_project(root)
-        result = ScanResult(target_name=target_name, profile=profile.to_dict(), offline=is_offline)
+        result = ScanResult(target_name=target_name, profile=profile.to_dict(), source=source, offline=is_offline)
 
         # Stage 2.5: Build Dependency Graph & Reachability Map
         _report(25, "Building dependency graph and reachability map...")
@@ -199,7 +199,7 @@ def run_pipeline(
             return ToolStatus(name=tool_name, version=version, state=ToolState.OK, reason="")
 
         try:
-            gitleaks_raw = run_gitleaks(root)
+            gitleaks_raw = run_gitleaks(root, offline=is_offline)
             statuses.append(_make_status("gitleaks", gitleaks_raw))
         except Exception as exc:
             statuses.append(_make_status("gitleaks", {}, exc))
@@ -220,21 +220,21 @@ def run_pipeline(
 
         _report(62, "Running pip-audit dependency scanner...")
         try:
-            pip_audit_raw = run_pip_audit(root)
+            pip_audit_raw = run_pip_audit(root, offline=is_offline)
             statuses.append(_make_status("pip-audit", pip_audit_raw))
         except Exception as exc:
             statuses.append(_make_status("pip-audit", {}, exc))
 
         _report(66, "Running npm audit dependency scanner...")
         try:
-            npm_audit_raw = run_npm_audit(root)
+            npm_audit_raw = run_npm_audit(root, offline=is_offline)
             statuses.append(_make_status("npm-audit", npm_audit_raw))
         except Exception as exc:
             statuses.append(_make_status("npm-audit", {}, exc))
 
         _report(70, "Running Bandit Python AST security analyzer...")
         try:
-            bandit_raw = run_bandit(root)
+            bandit_raw = run_bandit(root, offline=is_offline)
             statuses.append(_make_status("bandit", bandit_raw))
         except Exception as exc:
             statuses.append(_make_status("bandit", {}, exc))
@@ -266,6 +266,7 @@ def run_pipeline(
         lockfile_pkgs = len(dep_graph.nodes) if dep_graph and len(dep_graph.nodes) > 0 else total_licenses_checked
         result.license_packages_checked = lockfile_pkgs if lockfile_pkgs > 0 else len(result.findings)
 
+        normalizer.clear_filtered_findings_ledger()
         findings = normalizer.normalize_all(
             gitleaks_raw, semgrep_raw, trivy_raw, root,
             pip_audit_raw=pip_audit_raw,
@@ -300,7 +301,7 @@ def run_pipeline(
         # Enrich dependency findings with scope, reachability, EPSS, and KEV
         all_cves = set()
         for f in findings:
-            if f.category == "dependency" or f.package_name:
+            if (f.category == "dependency" or f.package_name) and f.package_name:
                 pkg = f.package_name
                 f.scope = dep_graph.get_scope(pkg)
                 f.reachability = reach_map.get_status(pkg)
@@ -330,9 +331,25 @@ def run_pipeline(
         except Exception as exc:
             result.warnings.append(f"exploit-intel: {exc}")
 
-        # Check inline suppressions
-        active_findings, suppressed_findings = _check_inline_suppressions(root, findings)
-        result.suppressed_findings = suppressed_findings
+        # Check inline suppressions & normalizer filter ledger
+        active_findings, inline_suppressed = _check_inline_suppressions(root, findings)
+        filtered_entries = normalizer.get_filtered_findings_ledger()
+        normalizer_suppressed = [
+            Finding(
+                rule_id=fe["rule_id"],
+                title=f"[FILTERED] {fe['rule_id']}",
+                cwe="CWE-0",
+                severity=Severity.INFO,
+                confidence=0.0,
+                location=Location(file=fe["file"], start_line=fe["line"]),
+                evidence=fe["evidence"],
+                category=fe["category"],
+                suppressed=True,
+                suppression_reason=fe["reason"],
+            )
+            for fe in filtered_entries
+        ]
+        result.suppressed_findings = inline_suppressed + normalizer_suppressed
 
         # Classify source file exposure for code/secret/config findings (I-54)
         from .exposure import classify_file_exposure
@@ -351,7 +368,7 @@ def run_pipeline(
             min_rank = _REACHABILITY_RANKS.get(min_r, 0)
             scored = [
                 f for f in scored
-                if f.category != "dependency" or _REACHABILITY_RANKS.get(f.reachability.upper(), 2) >= min_rank
+                if f.category != "dependency" or _REACHABILITY_RANKS.get((f.reachability or "").upper(), 2) >= min_rank
             ]
 
         # Attach OWASP mapping
@@ -381,8 +398,8 @@ def run_pipeline(
                 fix_actions=fix_actions,
                 attack_surface=result.attack_surface,
                 reachability=reach_map,
-                frameworks=list((profile.to_dict().get("frameworks") or [])),
-                suppressed_count=len(suppressed_findings),
+                frameworks=list(profile.to_dict().get("frameworks") or []),
+                suppressed_count=len(result.suppressed_findings),
             )
             # Save asm.json with every scan
             asm_path = root / "asm.json" if root.is_dir() else Path("asm.json")
@@ -476,10 +493,8 @@ def run_pipeline(
                 if hasattr(result.asm.posture, k):
                     setattr(result.asm.posture, k, v)
             asm_path = root / "asm.json" if root.is_dir() else Path("asm.json")
-            try:
+            with contextlib.suppress(Exception):
                 result.asm.save(asm_path)
-            except Exception:
-                pass
 
         # Persistence
         result.scan_id = storage.save_scan(
@@ -502,6 +517,7 @@ def run_pipeline(
                     fix_actions=fix_actions,
                     metadata=result.metadata,
                     asm=result.asm,
+                    suppressed_findings=result.suppressed_findings,
                 )
             except Exception as exc:
                 result.warnings.append(f"pdf-report: {exc}")

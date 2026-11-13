@@ -7,13 +7,13 @@ Falls back gracefully when npm is not installed or no package-lock.json exists.
 from __future__ import annotations
 
 import json
-import subprocess
+import os
 from pathlib import Path
 
-from .base import find_executable, get_tool_version, tool_available
+from .base import ScannerError, find_executable, get_tool_version, run_subprocess, tool_available
 
 
-def run_npm_audit(target: Path) -> dict:
+def run_npm_audit(target: Path, offline: bool = False) -> dict:
     """Run npm audit against Node.js package-lock.json files in the target directory.
 
     Enforces I-02:
@@ -22,7 +22,8 @@ def run_npm_audit(target: Path) -> dict:
     - Supports v7+ JSON format (auditReportVersion: 2, vulnerabilities map)
     - Timeout 60s
     - No package-lock.json = SKIPPED with reason
-    - Only marks FAILED when JSON cannot be parsed or registry unreachable
+    - Offline mode = SKIPPED with reason
+    - Only marks FAILED when JSON cannot be parsed or non-network fatal error
     """
     version = get_tool_version("npm")
     if not tool_available("npm"):
@@ -31,6 +32,16 @@ def run_npm_audit(target: Path) -> dict:
             "_skipped": "npm not installed",
             "_state": "SKIPPED",
             "_reason": "npm not installed",
+            "_version": version,
+        }
+
+    is_off = offline or (os.environ.get("VIBESEC_OFFLINE", "").strip() in ("1", "true", "yes", "on"))
+    if is_off:
+        return {
+            "vulnerabilities": {},
+            "_skipped": "offline mode (--no-network); npm audit requires network registry",
+            "_state": "SKIPPED",
+            "_reason": "offline mode (--no-network); npm audit requires network registry",
             "_version": version,
         }
 
@@ -58,26 +69,22 @@ def run_npm_audit(target: Path) -> dict:
     for lockfile in lockfiles:
         cmd = [npm_bin, "audit", "--package-lock-only", "--json", "--ignore-scripts"]
         try:
-            res = subprocess.run(
+            stdout, stderr, _ = run_subprocess(
                 cmd,
-                capture_output=True,
-                text=True,
+                cwd=lockfile.parent,
                 timeout=60,
-                cwd=str(lockfile.parent),
             )
-        except subprocess.TimeoutExpired:
-            last_error = "npm audit timed out after 60s"
+        except ScannerError as exc:
+            last_error = str(exc)
             continue
         except Exception as exc:
             last_error = str(exc)
             continue
 
-        stdout = res.stdout.strip()
+        stdout = stdout.strip()
         if not stdout:
-            stderr = res.stderr.strip()
-            if stderr:
-                first_line = stderr.splitlines()[0]
-                last_error = first_line
+            if stderr.strip():
+                last_error = stderr.strip().splitlines()[0]
             continue
 
         try:
@@ -88,12 +95,10 @@ def run_npm_audit(target: Path) -> dict:
             if "advisories" in data and isinstance(data["advisories"], dict):
                 combined_advisories.update(data["advisories"])
         except json.JSONDecodeError:
-            stderr = res.stderr.strip()
-            first_line = stderr.splitlines()[0] if stderr else "npm audit returned non-JSON"
-            last_error = first_line
+            err_line = stderr.strip().splitlines()[0] if stderr.strip() else "npm audit returned non-JSON"
+            last_error = err_line
 
     if successful_runs == 0 and last_error:
-        # Determine if offline/network registry error
         is_net_err = any(k in last_error.lower() for k in ("enotfound", "eai_again", "network", "fetch failed", "registry"))
         state = "DEGRADED" if is_net_err else "FAILED"
         return {

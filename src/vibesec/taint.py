@@ -10,8 +10,10 @@ show *why* a flow is believed reachable.
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .imports import iter_source_files
 from .models import Finding, Location, Severity, SourceTool
@@ -236,14 +238,14 @@ def _route_tainted_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[
     return tainted
 
 
-def _union(taints: list[Taint]) -> Taint | None:
+def _union(taints: list[Taint | None] | Iterable[Taint | None]) -> Taint | None:
     for t in taints:
         if t is not None:
             return t
     return None
 
 
-def _expr_taint(node: ast.AST | None, env: dict[str, Taint], functions: dict[str, ast.AST]) -> Taint | None:
+def _expr_taint(node: ast.AST | None, env: dict[str, Taint], functions: Mapping[str, Any]) -> Taint | None:
     if node is None:
         return None
     if isinstance(node, ast.Name):
@@ -311,7 +313,7 @@ def _analyze_statements(
     statements: list[ast.stmt],
     env: dict[str, Taint],
     file_rel: str,
-    functions: dict[str, ast.AST],
+    functions: Mapping[str, Any],
     flows: list[TaintFlow],
     seen: set[tuple[str, int, str]],
     callee_taint: dict[str, dict[str, Taint]],
@@ -329,7 +331,7 @@ def _analyze_statement(
     stmt: ast.stmt,
     env: dict[str, Taint],
     file_rel: str,
-    functions: dict[str, ast.AST],
+    functions: Mapping[str, Any],
     flows: list[TaintFlow],
     seen: set[tuple[str, int, str]],
     callee_taint: dict[str, dict[str, Taint]],
@@ -377,7 +379,7 @@ def _check_nested_calls(
     node: ast.AST | None,
     env: dict[str, Taint],
     file_rel: str,
-    functions: dict[str, ast.AST],
+    functions: Mapping[str, Any],
     flows: list[TaintFlow],
     seen: set[tuple[str, int, str]],
     callee_taint: dict[str, dict[str, Taint]],
@@ -398,7 +400,7 @@ def _check_call(
     node: ast.AST | None,
     env: dict[str, Taint],
     file_rel: str,
-    functions: dict[str, ast.AST],
+    functions: Mapping[str, Any],
     flows: list[TaintFlow],
     seen: set[tuple[str, int, str]],
     callee_taint: dict[str, dict[str, Taint]],
@@ -435,7 +437,7 @@ def _emit_sink(
     if short in _SHELL_SINKS and not _command_has_shell(call) and short not in ("system", "popen"):
         return
 
-    candidates: list[Taint] = []
+    candidates: list[Taint | None] = []
     if call.args:
         candidates.append(_expr_taint(call.args[0], env, {}))
     else:
@@ -476,12 +478,12 @@ def _propagate_call(
     call: ast.Call,
     env: dict[str, Taint],
     file_rel: str,
-    functions: dict[str, ast.AST],
+    functions: Mapping[str, Any],
     callee_taint: dict[str, dict[str, Taint]],
 ) -> None:
     name = _short(_dotted(call.func))
     target = functions.get(name)
-    if target is None:
+    if not isinstance(target, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return
     params = _param_names(target)
     args = list(call.args)
