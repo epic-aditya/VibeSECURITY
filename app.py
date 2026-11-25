@@ -2,7 +2,7 @@
 
 Implements the full Upload -> Discover -> Scan -> Correlate -> Prioritize -> Report
 pipeline with multi-scanner orchestration, attack-surface mapping, reachability analysis,
-CycloneDX SBOM generation, and empirical evaluation benchmarks.
+CycloneDX 1.5 SBOM generation, and OASIS SARIF 2.1.0 reporting.
 
 UI Design Standards:
 - Exclusive light theme with pure white surfaces and subtle slate borders.
@@ -385,11 +385,50 @@ div[class*="InputInstructions"],
     pointer-events: none !important;
 }
 
-/* Hide Streamlit Community Cloud hosting chrome */
-[data-testid="stToolbar"],
+/* Hide Streamlit Community Cloud hosting chrome while keeping sidebar toggle accessible */
+[data-testid="stToolbarActions"],
+[data-testid="stAppDeployButton"],
+[data-testid="stMainMenu"],
 div[class*="_profileContainer_"],
 a[class*="_viewerBadge_"] {
     display: none !important;
+}
+
+/* Keep header transparent and sidebar collapse/expand buttons visible on light theme */
+[data-testid="stHeader"] {
+    background-color: transparent !important;
+}
+
+[data-testid="stExpandSidebarButton"],
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"] {
+    visibility: visible !important;
+    opacity: 1 !important;
+    color: #0F172A !important;
+}
+
+[data-testid="stExpandSidebarButton"],
+[data-testid="collapsedControl"] button,
+[data-testid="stSidebarCollapseButton"] button {
+    background-color: #FFFFFF !important;
+    border: 1px solid #E2E8F0 !important;
+    border-radius: 6px !important;
+    color: #0F172A !important;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.04) !important;
+}
+
+[data-testid="stExpandSidebarButton"]:hover,
+[data-testid="collapsedControl"] button:hover,
+[data-testid="stSidebarCollapseButton"] button:hover {
+    background-color: #F1F5F9 !important;
+    border-color: #CBD5E1 !important;
+    color: #2563EB !important;
+}
+
+[data-testid="stExpandSidebarButton"] span,
+[data-testid="stSidebarCollapseButton"] span,
+[data-testid="collapsedControl"] span {
+    color: inherit !important;
 }
 </style>
 """

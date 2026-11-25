@@ -1,6 +1,6 @@
 # VibeSec Threat Model
 
-This document outlines the threat landscape, security assets, attacker profiles, defensive mitigations, and residual risks for VibeSec deployments.
+This document outlines the threat landscape, security assets, attacker profiles, defensive mitigations, and production defense-in-depth practices for VibeSec deployments.
 
 ---
 
@@ -12,7 +12,7 @@ This document outlines the threat landscape, security assets, attacker profiles,
 | **Host Credentials & Env** | Environment variables, cloud tokens, API keys, and deployment credentials on the host. | Unauthorized cloud resource access, credential exfiltration. |
 | **System Resources** | Host CPU, disk space, and RAM allocated to web workers. | Resource starvation, denial-of-service (DoS) to other tenants. |
 | **Analyzed Source Code** | User codebases submitted for security assessment. | Unauthorized disclosure of proprietary code or intellectual property. |
-| **Scan History Database** | Stored findings and reports in SQLite (`vibesec.db`). | Leakage of discovered vulnerabilities before patches are applied. |
+| **Assessment Reports & Session State** | Active scan findings, SBOMs, and generated reports. | Unauthorized disclosure of discovered vulnerabilities prior to remediation. |
 
 ---
 
@@ -57,7 +57,7 @@ flowchart LR
 
 ### Threat 6: Data Exfiltration via Network Queries
 - **Attack**: Scanners or analyzers querying external services to resolve package data, potentially leaking scanned package names.
-- **Mitigation**: In offline mode (`--offline`), outbound network sockets are blocked. Vulnerability lookups rely strictly on pre-cached local databases.
+- **Mitigation**: In offline mode (`VIBESEC_OFFLINE=1` or `no_network=True`), outbound intelligence queries are suppressed. Vulnerability lookups rely strictly on pre-cached local databases.
 
 ---
 
